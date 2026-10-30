@@ -48,6 +48,7 @@ export const AGENT_PROFILES: Record<AgentId, AgentProfile> = {
 export interface BuildAgentPromptOptions {
   effort?: Exclude<EffortLevel, 'silent'>;
   thesis?: string;
+  peerTheses?: string[];
   priorSpeakerTheses?: Array<{ agentId: AgentId; thesis: string }>;
   isFinalWave?: boolean;
   steeringContinuation?: {
@@ -126,12 +127,16 @@ export function buildAgentSystemPrompt(
     sections.push(`## Assigned Focus for This Turn\nCore thesis to cover: ${opts.thesis}`);
   }
 
+  const seenTheses = new Set<string>(opts.peerTheses ?? []);
   if (opts.priorSpeakerTheses && opts.priorSpeakerTheses.length > 0) {
-    const priorLines = opts.priorSpeakerTheses
-      .map((p) => `- ${AGENT_PROFILES[p.agentId].name} is already covering: "${p.thesis}"`)
-      .join('\n');
+    for (const p of opts.priorSpeakerTheses) {
+      seenTheses.add(`${AGENT_PROFILES[p.agentId].name} is covering: ${p.thesis}`);
+    }
+  }
+  const peerThesisLines = Array.from(seenTheses).map((line) => `- ${line}`);
+  if (peerThesisLines.length > 0) {
     sections.push(
-      `## Asymmetric Anti-Repetition Notice\nEarlier speakers in this wave are already covering:\n${priorLines}\nDo NOT repeat their points; contribute only your unique angle and private facts.`,
+      `## Asymmetric Anti-Repetition Notice\nEarlier speakers in this wave are already covering:\n${peerThesisLines.join('\n')}\nDo NOT repeat their points; contribute only your unique angle and private facts.`,
     );
   }
 
