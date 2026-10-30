@@ -530,6 +530,20 @@ export class ScriptableMockLLMProvider implements LLMProvider {
     return undefined;
   }
 
+  hasMatchingSteeringJSONStep(options: CompleteJSONOptions): boolean {
+    const combinedText = options.messages.map((m) => m.content).join('\n');
+    return this.jsonQueue.some((step) => {
+      if (step.match) {
+        if (step.match instanceof RegExp) return step.match.test(combinedText);
+        return step.match(options);
+      }
+      if (typeof step.response === 'object' && step.response !== null) {
+        return 'action' in step.response;
+      }
+      return false;
+    });
+  }
+
   async *streamChat(options: StreamChatOptions): AsyncIterable<string> {
     this.streamCalls.push(options);
     const { signal } = options;

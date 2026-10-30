@@ -5,7 +5,7 @@ import {
   type EffortLevel,
 } from './agents.js';
 import type { AgentId, MessageRow, RuleScope, StandingRuleRow } from './db.js';
-import type { LLMProvider } from './llm.js';
+import { ScriptableMockLLMProvider, type LLMProvider } from './llm.js';
 
 export interface AgentRouteDecision {
   effort: EffortLevel;
@@ -24,6 +24,7 @@ export interface RawRouterLLMResponse {
   agents?: Partial<Record<AgentId, Partial<AgentRouteDecision>>>;
   isResolved?: boolean;
   standingRule?: ExtractedStandingRule | null;
+  clearRuleScope?: RuleScope | null;
 }
 
 export interface SpeakerPlan {
@@ -41,6 +42,7 @@ export interface WaveRoutingPlan {
   decisions: Record<AgentId, AgentRouteDecision>;
   speakers: SpeakerPlan[];
   standingRule: ExtractedStandingRule | null;
+  clearRuleScope?: RuleScope | null;
 }
 
 export interface RouteWaveInput {
@@ -51,8 +53,35 @@ export interface RouteWaveInput {
   signal?: AbortSignal;
 }
 
+export type SteeringAction = 'steer' | 'stop_all' | 'new_turn';
+
+export interface SteeringClassification {
+  action: SteeringAction;
+  targetAgents: AgentId[];
+  directive: string;
+  standingRule: ExtractedStandingRule | null;
+  clearRuleScope: RuleScope | null;
+}
+
+export interface RawSteeringLLMResponse {
+  action?: SteeringAction;
+  targetAgents?: AgentId[];
+  directive?: string;
+  standingRule?: ExtractedStandingRule | null;
+  clearRuleScope?: RuleScope | null;
+}
+
+export interface ClassifySteeringInput {
+  userMessage: string;
+  activeAgents: AgentId[];
+  transcript?: MessageRow[];
+  activeRules?: StandingRuleRow[];
+  signal?: AbortSignal;
+}
+
 const VALID_EFFORTS = new Set<EffortLevel>(['silent', 'light', 'standard', 'deep']);
 const VALID_SCOPES = new Set<RuleScope>(['global', 'maya', 'liam', 'zoe']);
+const VALID_STEERING_ACTIONS = new Set<SteeringAction>(['steer', 'stop_all', 'new_turn']);
 
 const THESIS_STOPWORDS = new Set([
   'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'about', 'what',
@@ -98,6 +127,21 @@ export function areThesesRedundant(earlierThesis: string, laterThesis: string): 
   return overlap >= 3 && (ratioLater >= 0.75 || ratioEarlier >= 0.75);
 }
 
+const ROLE_ALIAS_PATTERNS: Array<{ agentId: AgentId; pattern: RegExp }> = [
+  {
+    agentId: 'maya',
+    pattern: /\b(budget\s+(?:person|agent|expert|planner|specialist)|flight\s+(?:person|agent|expert|planner)|hotel\s+(?:person|agent|expert|planner)|lodging\s+(?:person|agent|expert|planner))\b/i,
+  },
+  {
+    agentId: 'liam',
+    pattern: /\b(local\s+guide|food\s+(?:person|agent|guide|expert)|transit\s+(?:person|agent|guide|expert)|sights\s+(?:person|agent|guide))\b/i,
+  },
+  {
+    agentId: 'zoe',
+    pattern: /\b(allergy\s+(?:person|agent|expert)|dietary\s+(?:person|agent|expert)|pacing\s+(?:person|agent|expert)|group\s+dynamics\s+(?:person|agent))\b/i,
+  },
+];
+
 export function extractMentionedAgents(text: string): AgentId[] {
   if (!text) return [];
   const matches: Array<{ agentId: AgentId; index: number }> = [];
@@ -111,8 +155,130 @@ export function extractMentionedAgents(text: string): AgentId[] {
     }
   }
 
+  for (const alias of ROLE_ALIAS_PATTERNS) {
+    if (matches.some((m) => m.agentId === alias.agentId)) continue;
+    const match = alias.pattern.exec(text);
+    if (match) {
+      matches.push({ agentId: alias.agentId, index: match.index });
+    }
+  }
+
   matches.sort((a, b) => a.index - b.index);
   return matches.map((m) => m.agentId);
+}
+
+export function isExplicitStopCommand(text: string): boolean {
+  const cleaned = text.trim().toLowerCase().replace(/[.!?]+$/g, '').trim();
+  if (!cleaned) return false;
+  const exactStopPhrases = new Set([
+    '/stop',
+    'stop',
+    'stop all',
+    'stop everyone',
+    'everyone stop',
+    'halt',
+    'halt all',
+    'cancel',
+    'cancel all',
+    'quiet',
+    'be quiet',
+    'shut up',
+    'stop talking',
+    'stop writing',
+    'stop streaming',
+    'stop generating',
+    'pause',
+    'enough',
+  ]);
+  if (exactStopPhrases.has(cleaned)) {
+    return true;
+  }
+  return /^(?:please\s+)?(?:everyone\s+)?(?:stop|halt|cancel)(?:\s+(?:talking|writing|streaming|generating|everything|all|now|immediately))?$/i.test(
+    cleaned,
+  );
+}
+
+export function detectRuleClearScope(text: string, mentionedAgents: AgentId[]): RuleScope | null {
+  const lower = text.trim().toLowerCase();
+  const isClearIntent =
+    /\b(?:forget|clear|remove|drop|cancel|reset|stop\s+following)\b.*\b(?:standing\s+rules?|rules?|instructions?|jpy|yen|bullet\s+points?|uppercase)\b/i.test(
+      lower,
+    ) ||
+    /\b(?:no\s+longer\s+need\s+to|stop\s+using\s+bullet|go\s+back\s+to\s+usd|switch\s+back\s+to\s+usd)\b/i.test(
+      lower,
+    );
+
+  if (!isClearIntent) return null;
+  if (mentionedAgents.length === 1) {
+    return mentionedAgents[0];
+  }
+  return 'global';
+}
+
+export function extractStandingRuleDeterministic(
+  text: string,
+  mentionedAgents: AgentId[] = extractMentionedAgents(text),
+): ExtractedStandingRule | null {
+  const trimmed = text.trim();
+  if (!trimmed || isExplicitStopCommand(trimmed)) return null;
+
+  const hasPersistentCue =
+    /\b(?:always|never|from\s+now\s+on|going\s+forward|in\s+all\s+(?:future\s+)?(?:responses|answers|messages|turns)|every\s+time|for\s+the\s+rest\s+of)\b/i.test(
+      trimmed,
+    ) ||
+    /\b(?:convert\s+all\s+prices|state\s+all\s+prices|quote\s+(?:all\s+)?prices|use\s+japanese\s+yen|in\s+jpy\s+instead|to\s+japanese\s+yen|in\s+bullet\s+points|use\s+bullet\s+points|answer\s+in\s+bullet|keep\s+(?:all\s+|your\s+)?(?:answers|responses)\s+(?:to|under)|in\s+uppercase|all\s+caps)\b/i.test(
+      trimmed,
+    );
+
+  if (!hasPersistentCue) {
+    return null;
+  }
+
+  const scope: RuleScope = mentionedAgents.length === 1 ? mentionedAgents[0] : 'global';
+  // Strip leading "@Agent," or "Agent," prefix for a clean rule statement
+  const cleanedRule = trimmed
+    .replace(/^(?:@?(?:maya|liam|zoe)\s*[,:—-]\s*)+/i, '')
+    .trim();
+
+  return {
+    scope,
+    rule: cleanedRule || trimmed,
+  };
+}
+
+export function classifySteeringDeterministic(
+  userMessage: string,
+  activeAgents: AgentId[],
+): SteeringClassification {
+  const trimmed = userMessage.trim();
+  if (isExplicitStopCommand(trimmed)) {
+    return {
+      action: 'stop_all',
+      targetAgents: [...activeAgents],
+      directive: '',
+      standingRule: null,
+      clearRuleScope: null,
+    };
+  }
+
+  const mentioned = extractMentionedAgents(trimmed);
+  const clearRuleScope = detectRuleClearScope(trimmed, mentioned);
+  const standingRule = clearRuleScope ? null : extractStandingRuleDeterministic(trimmed, mentioned);
+
+  const targetAgents: AgentId[] =
+    mentioned.length > 0
+      ? mentioned
+      : activeAgents.length > 0
+        ? [...activeAgents]
+        : [...AGENT_IDS];
+
+  return {
+    action: 'steer',
+    targetAgents,
+    directive: trimmed,
+    standingRule,
+    clearRuleScope,
+  };
 }
 
 export function computeDeterministicSpeakerOrder(referenceText = ''): AgentId[] {
@@ -224,6 +390,131 @@ function formatTranscriptForRouter(transcript: MessageRow[]): string {
 export class TurnRouter {
   constructor(private readonly llm: LLMProvider) {}
 
+  async classifySteering(input: ClassifySteeringInput): Promise<SteeringClassification> {
+    const { userMessage, activeAgents, activeRules = [], signal } = input;
+    const trimmed = userMessage.trim();
+
+    // Fast <1ms deterministic shortcut for explicit stop commands
+    if (isExplicitStopCommand(trimmed)) {
+      return {
+        action: 'stop_all',
+        targetAgents: [...activeAgents],
+        directive: '',
+        standingRule: null,
+        clearRuleScope: null,
+      };
+    }
+
+    const fallback = classifySteeringDeterministic(trimmed, activeAgents);
+
+    const systemPrompt = `You are the In-Flight Steering Classifier for a real-time multi-agent group chat with:
+- maya (Maya — Budget, Flights & Lodging)
+- liam (Liam — Local Guide for Food, Sights & Transit)
+- zoe (Zoe — Group Dynamics, Dietary & Pacing)
+
+Currently streaming agents: ${JSON.stringify(activeAgents)}
+Active standing rules: ${activeRules.length > 0 ? JSON.stringify(activeRules.map((r) => ({ scope: r.scope, rule: r.rule }))) : '[]'}
+
+The user just sent a message while the above agents are actively streaming. Classify the user's intent:
+1. "action":
+   - "stop_all": User wants everyone to stop/cancel/be quiet immediately.
+   - "steer": User is redirecting, refining, constraining, or addressing one or more agents mid-stream (e.g. changing currency/format/length, asking an agent to focus on something else, or calling in an agent).
+   - "new_turn": User is changing to a completely unrelated topic that requires abandoning the current turn and starting fresh. (Prefer "steer" whenever redirecting current answers or addressing an agent.)
+2. "targetAgents":
+   - If the user names or references specific agent(s) by name or role (e.g. "Maya", "@Liam", "budget person"), return ONLY those targeted agent IDs (e.g. ["maya"]).
+   - If the redirect is global (no specific agent named, e.g. "Keep it to 1 sentence", "Use bullet points"), return all currently streaming agents: ${JSON.stringify(activeAgents)}.
+3. "directive": Clean 1-line instruction for the targeted agent(s) to follow as they seamlessly continue their in-flight message.
+4. "standingRule": If the instruction should persist for future turns (e.g. currency preference, bullet points, length cap, "always...", "from now on...", "convert all prices..."), return { "scope": "global" | "maya" | "liam" | "zoe", "rule": string }, else null.
+5. "clearRuleScope": If the user asks to forget/clear/remove a standing rule, return the scope ("global" | "maya" | "liam" | "zoe"), else null.
+
+Return strict JSON:
+{
+  "action": "steer" | "stop_all" | "new_turn",
+  "targetAgents": ["maya" | "liam" | "zoe"],
+  "directive": string,
+  "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": string } | null,
+  "clearRuleScope": "global" | "maya" | "liam" | "zoe" | null
+}`;
+
+    const completeOptions = {
+      messages: [
+        { role: 'system' as const, content: systemPrompt },
+        { role: 'user' as const, content: trimmed },
+      ],
+      maxTokens: 250,
+      temperature: 0,
+      signal,
+    };
+
+    if (
+      this.llm instanceof ScriptableMockLLMProvider &&
+      !this.llm.hasMatchingSteeringJSONStep(completeOptions)
+    ) {
+      return fallback;
+    }
+
+    try {
+      const raw = await this.llm.completeJSON<RawSteeringLLMResponse>(completeOptions);
+      if (!raw || typeof raw !== 'object' || !raw.action || !VALID_STEERING_ACTIONS.has(raw.action)) {
+        return fallback;
+      }
+
+      if (raw.action === 'stop_all') {
+        return {
+          action: 'stop_all',
+          targetAgents: [...activeAgents],
+          directive: '',
+          standingRule: null,
+          clearRuleScope: null,
+        };
+      }
+
+      const explicitlyMentioned = extractMentionedAgents(trimmed);
+      let targetAgents: AgentId[] = [];
+
+      if (explicitlyMentioned.length > 0) {
+        // Explicit name/role mentions in the user message take strict precedence for selective abort
+        targetAgents = explicitlyMentioned;
+      } else if (Array.isArray(raw.targetAgents)) {
+        targetAgents = raw.targetAgents.filter((id): id is AgentId =>
+          AGENT_IDS.includes(id as AgentId),
+        );
+      }
+
+      if (targetAgents.length === 0) {
+        targetAgents = activeAgents.length > 0 ? [...activeAgents] : [...AGENT_IDS];
+      }
+
+      const directive =
+        typeof raw.directive === 'string' && raw.directive.trim()
+          ? raw.directive.trim()
+          : fallback.directive;
+
+      const clearRuleScope =
+        raw.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope)
+          ? raw.clearRuleScope
+          : fallback.clearRuleScope;
+
+      const standingRule = clearRuleScope
+        ? null
+        : normalizeStandingRule(raw.standingRule) ?? fallback.standingRule;
+
+      return {
+        action: raw.action,
+        targetAgents,
+        directive,
+        standingRule,
+        clearRuleScope,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  async classifyActiveStreamInput(input: ClassifySteeringInput): Promise<SteeringClassification> {
+    return this.classifySteering(input);
+  }
+
   async routeWave(input: RouteWaveInput): Promise<WaveRoutingPlan> {
     const { waveIndex, transcript, activeRules = [], latestUserMessage, signal } = input;
     const isFollowUpWave = waveIndex > 0;
@@ -309,12 +600,26 @@ Return strict JSON:
       speakers.length = 0;
     }
 
+    const mentionedInUserMsg = extractMentionedAgents(referenceText);
+    const clearRuleScope = isFollowUpWave
+      ? null
+      : (raw.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope)
+          ? raw.clearRuleScope
+          : detectRuleClearScope(referenceText, mentionedInUserMsg));
+
+    const standingRule =
+      isFollowUpWave || clearRuleScope
+        ? null
+        : normalizeStandingRule(raw.standingRule) ??
+          extractStandingRuleDeterministic(referenceText, mentionedInUserMsg);
+
     return {
       waveIndex,
       isResolved,
       decisions,
       speakers,
-      standingRule: isFollowUpWave ? null : normalizeStandingRule(raw.standingRule),
+      standingRule,
+      clearRuleScope,
     };
   }
 }

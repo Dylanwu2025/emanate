@@ -297,6 +297,17 @@ export class EmanateStore {
     this.db.prepare(`UPDATE standing_rules SET active = 0 WHERE id = ?`).run(id);
   }
 
+  clearStandingRules(scope?: RuleScope): number {
+    if (!scope || scope === 'global') {
+      const res = this.db.prepare(`UPDATE standing_rules SET active = 0 WHERE active = 1`).run();
+      return res.changes;
+    }
+    const res = this.db
+      .prepare(`UPDATE standing_rules SET active = 0 WHERE active = 1 AND scope = ?`)
+      .run(scope);
+    return res.changes;
+  }
+
   listActiveStandingRules(agentId?: AgentId): StandingRuleRow[] {
     if (agentId) {
       const stmt = this.db.prepare(`

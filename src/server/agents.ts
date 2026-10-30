@@ -51,6 +51,10 @@ export interface BuildAgentPromptOptions {
   peerTheses?: string[];
   priorSpeakerTheses?: Array<{ agentId: AgentId; thesis: string }>;
   isFinalWave?: boolean;
+  continuation?: {
+    flushedContent: string;
+    steeringDirective: string;
+  };
   steeringContinuation?: {
     flushedContent: string;
     redirectInstruction: string;
@@ -150,14 +154,24 @@ export function buildAgentSystemPrompt(
     );
   }
 
-  if (opts.steeringContinuation) {
-    sections.push(
-      `## Mid-Stream Steering Continuation
-You were in the middle of writing a response and have already emitted the following text to the chat bubble:
-<already_spoken>${opts.steeringContinuation.flushedContent}</already_spoken>
+  const activeContinuation = opts.continuation
+    ? {
+        flushedContent: opts.continuation.flushedContent,
+        redirectInstruction: opts.continuation.steeringDirective,
+      }
+    : opts.steeringContinuation;
 
-The user just interjected with this live redirect instruction: "${opts.steeringContinuation.redirectInstruction}"
-Continue seamlessly from the exact end of <already_spoken> to honor the redirect within the same message. Output ONLY the continuation suffix—do not repeat <already_spoken> or mention that you are being redirected.`,
+  if (activeContinuation) {
+    sections.push(
+      `## Mid-Stream Steering Continuation (CRITICAL)
+You were in the middle of writing a response and have already emitted the following text to the chat bubble:
+<already_spoken>${activeContinuation.flushedContent}</already_spoken>
+
+The user just interjected with this live redirect instruction: "${activeContinuation.redirectInstruction}"
+Continue seamlessly from the exact end of <already_spoken> to honor the redirect within the same message bubble.
+- Output ONLY the continuation suffix that follows <already_spoken>.
+- Do NOT repeat any words from <already_spoken>.
+- Do NOT acknowledge or mention that you are pivoting or being redirected; just naturally transition and fulfill "${activeContinuation.redirectInstruction}".`,
     );
   }
 
