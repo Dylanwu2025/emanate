@@ -1,8 +1,19 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EmanateStore } from './db.js';
 import { createLLMProvider, type LLMProvider } from './llm.js';
 import { GroupChatOrchestrator, type OrchestratorSSEEvent } from './orchestrator.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CLIENT_DIR = join(__dirname, '..', 'client');
+
+const STATIC_ASSET_CACHE = new Map<string, string>([
+  ['index.html', readFileSync(join(CLIENT_DIR, 'index.html'), 'utf-8')],
+  ['styles.css', readFileSync(join(CLIENT_DIR, 'styles.css'), 'utf-8')],
+  ['app.js', readFileSync(join(CLIENT_DIR, 'app.js'), 'utf-8')],
+]);
 
 export interface AppServerOptions {
   store?: EmanateStore;
@@ -31,6 +42,21 @@ function sendJSON(res: ServerResponse, statusCode: number, payload: unknown): vo
   setCorsHeaders(res);
   res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
+}
+
+function sendStaticFile(
+  res: ServerResponse,
+  fileName: string,
+  contentType: string,
+): void {
+  setCorsHeaders(res);
+  const content =
+    STATIC_ASSET_CACHE.get(fileName) ?? readFileSync(join(CLIENT_DIR, fileName), 'utf-8');
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Cache-Control': 'no-cache',
+  });
+  res.end(content);
 }
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -86,6 +112,21 @@ export function createAppServer(options: AppServerOptions = {}): AppServerInstan
     const pathname = url.pathname;
 
     try {
+      if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+        sendStaticFile(res, 'index.html', 'text/html; charset=utf-8');
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/styles.css') {
+        sendStaticFile(res, 'styles.css', 'text/css; charset=utf-8');
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/app.js') {
+        sendStaticFile(res, 'app.js', 'application/javascript; charset=utf-8');
+        return;
+      }
+
       if (req.method === 'GET' && (pathname === '/api/state' || pathname === '/api/messages')) {
         sendJSON(res, 200, {
           messages: orchestrator.getPublicMessages(),
@@ -204,8 +245,9 @@ const isDirectEntry =
 if (isDirectEntry) {
   const port = Number(process.env.PORT ?? 3000);
   const dbPath = process.env.DB_PATH ?? 'emanate.db';
-  const app = createAppServer({ dbPath });
-  app.listen(port, '0.0.0.0').then(({ url }) => {
-    console.log(`Emanate server listening at ${url}`);
+  const defaultPace = process.env.STREAM_PACE_MS ? Number(process.env.STREAM_PACE_MS) : 25;
+  const app = createAppServer({ dbPath, streamPaceMs: defaultPace });
+  app.listen(port, '0.0.0.0').then(({ port: boundPort }) => {
+    console.log(`Emanate Group Chat running at http://localhost:${boundPort}`);
   });
 }

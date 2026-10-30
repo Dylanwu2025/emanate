@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kyoto &amp; Osaka Trip — Group Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="chat-header">
+        <div class="header-left">
+          <div class="group-emblem" aria-hidden="true">KO</div>
+          <div class="group-meta">
+            <h1 class="group-title">Kyoto &amp; Osaka Trip</h1>
+            <p class="group-subtitle">5-Day Itinerary · Sam, Priya, Alex &amp; Jordan</p>
+          </div>
+        </div>
+
+        <div class="participants-bar" aria-label="Group participants">
+          <button
+            type="button"
+            class="participant-pill participant-maya"
+            data-mention="@Maya "
+            title="Click to mention @Maya"
+          >
+            <span class="avatar avatar-maya">M</span>
+            <span class="participant-info">
+              <span class="participant-name">Maya</span>
+              <span class="participant-role">Flights &amp; Budget</span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            class="participant-pill participant-liam"
+            data-mention="@Liam "
+            title="Click to mention @Liam"
+          >
+            <span class="avatar avatar-liam">L</span>
+            <span class="participant-info">
+              <span class="participant-name">Liam</span>
+              <span class="participant-role">Transit &amp; Food</span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            class="participant-pill participant-zoe"
+            data-mention="@Zoe "
+            title="Click to mention @Zoe"
+          >
+            <span class="avatar avatar-zoe">Z</span>
+            <span class="participant-info">
+              <span class="participant-name">Zoe</span>
+              <span class="participant-role">Group &amp; Dietary</span>
+            </span>
+          </button>
+        </div>
+
+        <div class="header-actions">
+          <button
+            type="button"
+            id="reset-btn"
+            class="btn-secondary"
+            title="Clear conversation history"
+          >
+            New Chat
+          </button>
+        </div>
+      </header>
+
+      <main id="message-feed" class="message-feed" aria-live="polite">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-card">
+            <h2>Plan your 5-day Kyoto &amp; Osaka getaway</h2>
+            <p>
+              Chat with <strong>Maya</strong> (Flights, Hotels &amp; Budget),
+              <strong>Liam</strong> (Transit, Sights &amp; Food), and
+              <strong>Zoe</strong> (Group Pacing &amp; Dietary) all in one place.
+            </p>
+            <div class="starter-prompts">
+              <button
+                type="button"
+                class="starter-chip"
+                data-prompt="Should we take Flight B and stay at Ryokan Gion on Day 1?"
+              >
+                “Should we take Flight B and stay at Ryokan Gion on Day 1?”
+              </button>
+              <button
+                type="button"
+                class="starter-chip"
+                data-prompt="Can we do the Nishiki Market Street Food Tour for lunch on Day 2, and where should we eat dinner in Arashiyama?"
+              >
+                “Can we do the Nishiki Market Street Food Tour for lunch on Day 2?”
+              </button>
+              <button
+                type="button"
+                class="starter-chip"
+                data-prompt="@Maya and @Liam give us a breakdown of flight and hotel costs plus airport transit times."
+              >
+                “@Maya and @Liam breakdown flight/hotel costs and airport transit”
+              </button>
+            </div>
+          </div>
+        </div>
+        <div id="messages-list" class="messages-list"></div>
+      </main>
+
+      <footer class="composer-area">
+        <div id="mention-menu" class="mention-menu hidden" role="listbox" aria-label="Mention a participant"></div>
+
+        <div class="composer-toolbar">
+          <div class="mention-chips">
+            <span class="toolbar-label">Mention:</span>
+            <button type="button" class="mention-chip chip-maya" data-mention="@Maya ">@Maya</button>
+            <button type="button" class="mention-chip chip-liam" data-mention="@Liam ">@Liam</button>
+            <button type="button" class="mention-chip chip-zoe" data-mention="@Zoe ">@Zoe</button>
+          </div>
+
+          <button
+            type="button"
+            id="stop-btn"
+            class="btn-stop hidden"
+            aria-label="Stop active responses"
+          >
+            <span class="stop-square" aria-hidden="true"></span>
+            Stop
+          </button>
+        </div>
+
+        <form id="composer-form" class="composer-form" autocomplete="off">
+          <textarea
+            id="composer-input"
+            class="composer-input"
+            rows="1"
+            placeholder="Message the group… (use @Maya, @Liam, or @Zoe anytime)"
+            aria-label="Message the group"
+          ></textarea>
+          <button type="submit" id="send-btn" class="btn-send" aria-label="Send message">
+            Send
+          </button>
+        </form>
+      </footer>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

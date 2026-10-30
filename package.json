@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "tsx src/server/index.ts",
+    "dev": "tsx watch src/server/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
