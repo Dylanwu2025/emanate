@@ -1034,7 +1034,7 @@ Return strict JSON:
       );
       const prevWaveCombinedText = prevWaveMsgs.map((m) => m.content).join('\n');
       const prevWaveHasQuestionOrVeto =
-        /[?]|\b(?:ensure|verify|check|what\s+about|alternative|instead|avoid|veto(?:ed)?|unsafe|risk|cannot|can't|isn't\s+suitable|not\s+suitable|won't\s+work|conflicts?\s+with|rules?\s+out|miss\s+the\s+check-?in)\b/i.test(
+        /[?]|\b(?:avoid|veto(?:ed)?|unsafe|not\s+suitable|isn't\s+suitable|cannot|can't|won't\s+work|violates?|forfeits?|rules?\s+out|miss\s+the\s+check-?in)\b/i.test(
           prevWaveCombinedText,
         );
 
@@ -1046,9 +1046,31 @@ Return strict JSON:
           .map((m) => m.content);
         const priorThesesForAgent = turnThesesByAgent[agentId] ?? [];
 
-        const wasTaggedInPrevWave = prevWaveMsgs.some((m) =>
-          extractMentionedAgents(m.content, runtimeConfig).includes(agentId),
-        );
+        const wasTaggedWithQuestionOrVetoInPrevWave = prevWaveMsgs.some((m) => {
+          if (!extractMentionedAgents(m.content, runtimeConfig).includes(agentId)) {
+            return false;
+          }
+          // Check if the peer who tagged `agentId` asked a question (?) OR rejected an option that `agentId` proposed in Wave 0!
+          if (m.content.includes('?')) return true;
+          const agentPriorText = priorMsgsForAgent.join('\n').toLowerCase();
+          // If the Wave 0 speaker already listed 2+ options (so the alternative is already on screen!),
+          // they do NOT need to speak a second time unless the Wave 1 peer asked a direct question (`?`).
+          const alreadyListedMultipleOptions = priorMsgsForAgent.some(
+            (msg) =>
+              /\b1[.)]\s+[\s\S]*\b2[.)]\s+/.test(msg) ||
+              (msg.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2 ||
+              /\bFlight\s*A\b[\s\S]*\bFlight\s*B\b/i.test(msg),
+          );
+          if (alreadyListedMultipleOptions) {
+            return false;
+          }
+          return (
+            agentPriorText.length > 0 &&
+            /\b(?:avoid|veto(?:ed)?|unsafe|not\s+suitable|isn't\s+suitable|cannot|can't|won't\s+work|violates?|forfeits?|rules?\s+out|miss\s+the\s+check-?in|different\s+\w+\s+option|alternative)\b/i.test(
+              m.content,
+            )
+          );
+        });
 
         if (!isMock && priorMsgsForAgent.length > 0) {
           // Never allow an agent to speak a 3rd time in the same turn, and never allow
@@ -1061,7 +1083,8 @@ Return strict JSON:
           const alreadyListedMultipleOptions = priorMsgsForAgent.some(
             (msg) =>
               /\b1[.)]\s+[\s\S]*\b2[.)]\s+/.test(msg) ||
-              (msg.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2,
+              (msg.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2 ||
+              /\bFlight\s*A\b[\s\S]*\bFlight\s*B\b/i.test(msg),
           );
           const isWave0SpeakerPivotingAfterPeer =
             priorMsgsForAgent.length === 1 &&
@@ -1069,10 +1092,9 @@ Return strict JSON:
             prevWaveHasQuestionOrVeto &&
             inferredPrevSpeakers.some((id) => id !== agentId);
           const isTaggedPeerReplyingToQuestionOrVeto =
-            wasTaggedInPrevWave &&
+            wasTaggedWithQuestionOrVetoInPrevWave &&
             priorMsgsForAgent.length === 1 &&
-            !inferredPrevSpeakers.includes(agentId) &&
-            prevWaveHasQuestionOrVeto;
+            !inferredPrevSpeakers.includes(agentId);
 
           if (!isWave0SpeakerPivotingAfterPeer && !isTaggedPeerReplyingToQuestionOrVeto) {
             rawDecisions[agentId] = { effort: 'silent', thesis: '' };
@@ -1081,7 +1103,7 @@ Return strict JSON:
         }
 
         if (
-          !(wasTaggedInPrevWave && prevWaveHasQuestionOrVeto && priorMsgsForAgent.length === 1 && waveIndex <= 2) &&
+          !(wasTaggedWithQuestionOrVetoInPrevWave && priorMsgsForAgent.length === 1 && waveIndex <= 2) &&
           (priorMsgsForAgent.length > 0 || priorThesesForAgent.length > 0) &&
           isSelfRepetitiveForAgent(
             rawDecisions[agentId].thesis,
@@ -1097,17 +1119,31 @@ Return strict JSON:
       // 1. If a speaker in Wave N-1 explicitly @mentioned or deferred to a peer who hasn't spoken yet
       //    in this turn (e.g. "@Maya how much does that cost?"), ensure that peer speaks!
       // 2. If in Wave 2 (after Wave 1), a speaker in Wave 1 explicitly @mentioned a Wave 0 speaker
-      //    AND raised a question or vetoed one of their options (e.g. "@Liam Nishiki is unsafe for Sam"),
-      //    allow that Wave 0 speaker to reply once in Wave 2 with a concrete alternative!
+      //    AND asked a question (`?`) or vetoed the single option that speaker proposed (when that speaker
+      //    hadn't already listed the alternative in Wave 0), allow that Wave 0 speaker to reply once in Wave 2!
       if (!isMock) {
         for (const msg of prevWaveMsgs) {
           const peerMentions = extractMentionedAgents(msg.content, runtimeConfig).filter(
             (id) => id !== msg.agent_id && !inferredPrevSpeakers.includes(id),
           );
           for (const targetPeerId of peerMentions) {
-            const priorCount = currentTurnAgentMsgs.filter(
-              (m) => m.agent_id === targetPeerId,
-            ).length;
+            const targetPriorMsgs = currentTurnAgentMsgs
+              .filter((m) => m.agent_id === targetPeerId)
+              .map((m) => m.content);
+            const priorCount = targetPriorMsgs.length;
+            const targetAlreadyListedMultiple = targetPriorMsgs.some(
+              (mText) =>
+                /\b1[.)]\s+[\s\S]*\b2[.)]\s+/.test(mText) ||
+                (mText.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2 ||
+                /\bFlight\s*A\b[\s\S]*\bFlight\s*B\b/i.test(mText),
+            );
+            const peerAskedOrVetoedTarget =
+              msg.content.includes('?') ||
+              (!targetAlreadyListedMultiple &&
+                /\b(?:avoid|veto(?:ed)?|unsafe|not\s+suitable|isn't\s+suitable|cannot|can't|won't\s+work|violates?|forfeits?|rules?\s+out|miss\s+the\s+check-?in|different\s+\w+\s+option|alternative)\b/i.test(
+                  msg.content,
+                ));
+
             if (priorCount === 0 && rawDecisions[targetPeerId].effort === 'silent') {
               rawDecisions[targetPeerId] = {
                 effort: 'standard',
@@ -1117,7 +1153,7 @@ Return strict JSON:
             } else if (
               priorCount === 1 &&
               waveIndex === 2 &&
-              prevWaveHasQuestionOrVeto &&
+              peerAskedOrVetoedTarget &&
               rawDecisions[targetPeerId].effort === 'silent'
             ) {
               const callerName = msg.agent_id

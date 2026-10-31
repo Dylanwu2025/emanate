@@ -63,6 +63,7 @@ export interface BuildAgentPromptOptions {
   thesis?: string;
   peerTheses?: string[];
   priorSpeakerTheses?: Array<{ agentId: AgentId; thesis: string }>;
+  coSpeakers?: AgentId[];
   waveIndex?: number;
   previousWaveSpeakers?: AgentId[];
   isFinalWave?: boolean;
@@ -301,6 +302,22 @@ ${peerThesisLines.join('\n')}
 - When another agent is already speaking in this wave, DO NOT write an intro recap, DO NOT restate options or facts that another agent is covering, and DO NOT repeat the same action items.
 - Jump straight into your single unique domain point in 1 to 3 concise sentences.`,
     );
+  }
+
+  if (opts.coSpeakers && opts.coSpeakers.length > 0) {
+    const coNames = opts.coSpeakers
+      .filter((id) => id !== agentId)
+      .map((id) => getAgentProfile(id, opts.runtimeConfig).name);
+    if (coNames.length > 0) {
+      const joinedCoNames = coNames.join(' and ');
+      const taggedCoNames = coNames.map((n) => `@${n}`).join(' or ');
+      sections.push(
+        `## Co-Speakers Active Right Now (Parallel Turn Awareness)
+${joinedCoNames} ${coNames.length === 1 ? 'is' : 'are'} ALREADY answering their part of the user's question concurrently in this exact same wave right next to you!
+- Do NOT ask ${taggedCoNames} a question about their part of the user's prompt, and do NOT tell the user to "check with ${taggedCoNames}" or "let ${taggedCoNames} share...", because they are already typing it right now!
+- Simply deliver your own domain's part cleanly. (You may still tag a teammate who is NOT in [${joinedCoNames}] if their domain constraint check is needed next.)`,
+      );
+    }
   }
 
   if (opts.effort) {

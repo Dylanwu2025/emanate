@@ -946,6 +946,7 @@ export class GroupChatOrchestrator extends EventEmitter {
 
     const preWaveTranscript = this.store.listMessages();
 
+    const waveSpeakerIds = speakers.map((s) => s.agentId);
     const initialWavePromises = reservedSlots.map(({ speaker, row, streamState }) =>
       this.streamSingleAgentInWave({
         speaker,
@@ -954,6 +955,7 @@ export class GroupChatOrchestrator extends EventEmitter {
         preWaveTranscript,
         reservedIds,
         isFinalWave,
+        coSpeakers: waveSpeakerIds.filter((id) => id !== speaker.agentId),
         previousWaveSpeakers,
         turnSignal,
       }),
@@ -976,6 +978,7 @@ export class GroupChatOrchestrator extends EventEmitter {
     preWaveTranscript: MessageRow[];
     reservedIds: Set<string>;
     isFinalWave: boolean;
+    coSpeakers?: AgentId[];
     previousWaveSpeakers?: AgentId[];
     turnSignal: AbortSignal;
   }): Promise<PublicWireMessage> {
@@ -986,6 +989,7 @@ export class GroupChatOrchestrator extends EventEmitter {
       preWaveTranscript,
       reservedIds,
       isFinalWave,
+      coSpeakers,
       previousWaveSpeakers,
       turnSignal,
     } = params;
@@ -1004,6 +1008,7 @@ export class GroupChatOrchestrator extends EventEmitter {
           thesis,
           peerTheses,
           priorSpeakerTheses,
+          coSpeakers,
           waveIndex: streamState.waveIndex,
           previousWaveSpeakers,
           isFinalWave,
