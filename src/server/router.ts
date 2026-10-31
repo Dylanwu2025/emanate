@@ -818,8 +818,8 @@ Each agent has an isolated private knowledge vault for their own domain:
 ${agentDirectory}
 
 Rules for routing Wave 0:
-1. Silence Gate:
-   - Assign ONLY the agent(s) whose domain (listed above) directly matches the user's question! Keep agents whose domain is not needed for this specific question "silent" so they never chime in just to defer to another agent.
+1. Silence Gate & Domain Matching:
+   - Match the user's actual question to the agent whose domain owns that question, even if the user refers to an item from the previous turn! (For example: if the user asks about budget, bankroll, or how much something costs, you MUST assign Maya and keep non-budget agents "silent" if they have no new domain facts to add; if the user asks whether an arrival time makes a check-in cutoff across locations, assign BOTH the lodging/cutoff owner Maya AND the transit-timing owner Liam!)
    - If the user explicitly addresses specific agent(s) by name (e.g. "@Maya ..."), ONLY the addressed agent(s) may speak in Wave 0—all non-addressed agents MUST be "silent".
    - At least ONE agent MUST speak in Wave 0 on every user message! For casual greetings ("hey team!") or thanks ("thanks!"), assign "light" effort with thesis "Reply with a warm 1-sentence greeting/acknowledgment".
 2. Strict Domain Partition & Sequential Cross-Domain Synthesis (NO Fake Numbers in Thesis):

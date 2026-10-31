@@ -1009,7 +1009,7 @@ export class GroupChatOrchestrator extends EventEmitter {
                 },
                 {
                   role: 'user' as const,
-                  content: `[Live Redirect: "${currentContinuation.directive}"] Continue directly from the exact end of your partial message above to fulfill "${currentContinuation.directive}". Do NOT repeat or re-list any bullet headers already written in your partial message above, and use ONLY the exact currency/format/length requested in "${currentContinuation.directive}". Output ONLY the continuation suffix.`,
+                  content: `[Live Redirect: "${currentContinuation.directive}"] Continue directly from the exact end of your partial message above to fulfill "${currentContinuation.directive}" strictly for your own domain (${getAgentProfile(agentId, this.runtimeConfig).roleTitle})—do NOT answer parts of the prompt that belong to your peers' domains, and do NOT repeat any bullet headers already written in your partial message above. Output ONLY the continuation suffix.`,
                 },
               ]
             : []),
