@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { CustomAgentRuntimeConfig } from './agents.js';
 import { EmanateStore } from './db.js';
 import { createLLMProvider, type LLMProvider } from './llm.js';
 import { GroupChatOrchestrator, type OrchestratorSSEEvent } from './orchestrator.js';
@@ -21,6 +22,7 @@ export interface AppServerOptions {
   orchestrator?: GroupChatOrchestrator;
   dbPath?: string;
   streamPaceMs?: number;
+  runtimeConfig?: CustomAgentRuntimeConfig;
 }
 
 export interface AppServerInstance {
@@ -84,6 +86,7 @@ export function createAppServer(options: AppServerOptions = {}): AppServerInstan
       store,
       llm,
       streamPaceMs: options.streamPaceMs,
+      runtimeConfig: options.runtimeConfig,
     });
 
   const sseClients = new Set<ServerResponse>();

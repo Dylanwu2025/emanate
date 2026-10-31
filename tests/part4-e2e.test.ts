@@ -415,5 +415,84 @@ describe('Part 4: Group Chat Web UI, Documentation & End-to-End Verification', (
       },
       45000,
     );
+
+    it(
+      'works seamlessly when private markdown vaults are swapped to a completely different scenario (B2B Cloud Architecture Launch)',
+      async () => {
+        const liveLLM = createLLMProvider();
+        if (!liveLLM.config.apiKey) {
+          return;
+        }
+
+        const customStore = new EmanateStore(':memory:');
+        const customApp = createAppServer({
+          store: customStore,
+          llm: liveLLM,
+          streamPaceMs: 10,
+          runtimeConfig: {
+            profileOverrides: {
+              maya: {
+                roleTitle: 'Cloud FinOps & Infrastructure Budget',
+                personality: 'Direct, cost-focused FinOps lead.',
+              },
+              liam: {
+                roleTitle: 'Database & Latency Architect',
+                personality: 'Performance-obsessed systems engineer.',
+              },
+              zoe: {
+                roleTitle: 'Security, HIPAA & Compliance Officer',
+                personality: 'Strict compliance and data residency specialist.',
+              },
+            },
+            vaultOverrides: {
+              maya: `# Maya — Private Vault (Cloud FinOps)
+## Monthly Infrastructure Budget
+- Total monthly budget cap: $15,000/month.
+## Cluster Options
+1. **Cluster Alpha (Multi-Tenant Shared GPU)**: $9,000/month, deployed in us-west-1.
+2. **Cluster Beta (Dedicated Single-Tenant H100)**: $14,200/month, deployed in eu-central-1.`,
+              liam: `# Liam — Private Vault (Database & Latency)
+## Replication & Latency Benchmarks
+- **Cluster Alpha (us-west-1)** has p99 latency of 180ms for European users and uses unencrypted shared memory buffers.
+- **Cluster Beta (eu-central-1)** has p99 latency of 22ms and supports dedicated NVMe encryption.`,
+              zoe: `# Zoe — Private Vault (Security & Compliance)
+## Non-Negotiable Compliance Rules
+- **EU Data Residency & Isolation**: Our enterprise healthcare contract strictly forbids multi-tenant shared GPUs or hosting outside the EU (us-west-1 is strictly vetoed). All workloads must run on dedicated single-tenant hardware in eu-central-1.`,
+            },
+          },
+        });
+
+        const { url: customUrl } = await customApp.listen(0);
+        try {
+          const postRes = await fetch(`${customUrl}/api/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content:
+                'Should we deploy on Cluster Alpha to save money, or do our latency and compliance rules require Cluster Beta?',
+            }),
+          });
+          expect(postRes.status).toBe(200);
+
+          const stateRes = await fetch(`${customUrl}/api/state`);
+          const stateData = (await stateRes.json()) as { messages: PublicWireMessage[] };
+
+          expect(stateData.messages.length).toBeGreaterThanOrEqual(3);
+          const combined = stateData.messages.map((m) => `[${m.agentName}]: ${m.content}`).join('\n');
+
+          // Verify synthesis across the swapped non-travel vaults:
+          // Maya: $9,000 / $14,200 / $15,000
+          expect(combined).toMatch(/9,000|14,200|15,000/);
+          // Liam or Zoe: eu-central-1 / us-west-1 / multi-tenant / 22ms / 180ms
+          expect(combined).toMatch(/eu-central-1|us-west-1|multi-tenant|dedicated|22\s*ms|180\s*ms/i);
+          // Zero Kyoto/Osaka leakage!
+          expect(combined).not.toMatch(/Kyoto|Osaka|Ryokan|Nishiki/i);
+        } finally {
+          await customApp.close();
+          customStore.close();
+        }
+      },
+      45000,
+    );
   });
 });

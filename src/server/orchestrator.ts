@@ -3,6 +3,8 @@ import {
   AGENT_PROFILES,
   EFFORT_MAX_TOKENS,
   buildAgentSystemPrompt,
+  getAgentProfile,
+  type CustomAgentRuntimeConfig,
   type EffortLevel,
 } from './agents.js';
 import type {
@@ -329,6 +331,7 @@ export interface OrchestratorOptions {
   llm: LLMProvider;
   maxA2AWaves?: number;
   streamPaceMs?: number;
+  runtimeConfig?: CustomAgentRuntimeConfig;
 }
 
 export class GroupChatOrchestrator extends EventEmitter {
@@ -337,6 +340,7 @@ export class GroupChatOrchestrator extends EventEmitter {
   public readonly router: TurnRouter;
   public readonly maxA2AWaves: number;
   public readonly streamPaceMs: number;
+  public readonly runtimeConfig?: CustomAgentRuntimeConfig;
 
   private readonly activeStreams = new Map<AgentId, ActiveAgentStreamState>();
   private turnAbortController: AbortController | null = null;
@@ -350,7 +354,8 @@ export class GroupChatOrchestrator extends EventEmitter {
     super();
     this.store = options.store;
     this.llm = options.llm;
-    this.router = new TurnRouter(options.llm);
+    this.runtimeConfig = options.runtimeConfig;
+    this.router = new TurnRouter(options.llm, options.runtimeConfig);
     this.maxA2AWaves = options.maxA2AWaves ?? MAX_A2A_WAVES;
     const envPace = Number(process.env.STREAM_PACE_MS ?? 0);
     this.streamPaceMs =
@@ -555,6 +560,7 @@ export class GroupChatOrchestrator extends EventEmitter {
         activeAgents: activeAgentIds,
         transcript: this.store.listMessages(),
         activeRules: this.store.listActiveStandingRules(),
+        runtimeConfig: this.runtimeConfig,
         signal: this.turnAbortController?.signal,
       });
 
@@ -790,6 +796,7 @@ export class GroupChatOrchestrator extends EventEmitter {
               : transcriptSnapshot[transcriptSnapshot.length - 1]?.content,
           previousWaveSpeakers,
           turnThesesByAgent,
+          runtimeConfig: this.runtimeConfig,
           signal: turnSignal,
         });
         wavePlans.push(plan);
@@ -956,6 +963,7 @@ export class GroupChatOrchestrator extends EventEmitter {
           peerTheses,
           priorSpeakerTheses,
           isFinalWave,
+          runtimeConfig: this.runtimeConfig,
           ...(currentContinuation
             ? {
                 continuation: {

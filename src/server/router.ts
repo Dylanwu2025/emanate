@@ -2,6 +2,9 @@ import {
   AGENT_IDS,
   AGENT_PROFILES,
   EFFORT_MAX_TOKENS,
+  getAgentProfile,
+  getAgentVaultTopicSummary,
+  type CustomAgentRuntimeConfig,
   type EffortLevel,
 } from './agents.js';
 import type { AgentId, MessageRow, RuleScope, StandingRuleRow } from './db.js';
@@ -52,6 +55,7 @@ export interface RouteWaveInput {
   latestUserMessage?: string;
   previousWaveSpeakers?: AgentId[];
   turnThesesByAgent?: Partial<Record<AgentId, string[]>>;
+  runtimeConfig?: CustomAgentRuntimeConfig;
   signal?: AbortSignal;
 }
 
@@ -78,6 +82,7 @@ export interface ClassifySteeringInput {
   activeAgents: AgentId[];
   transcript?: MessageRow[];
   activeRules?: StandingRuleRow[];
+  runtimeConfig?: CustomAgentRuntimeConfig;
   signal?: AbortSignal;
 }
 
@@ -112,23 +117,14 @@ export function isCasualSocialMessage(text: string): boolean {
   return CASUAL_SOCIAL_TURN_RE.test(text.trim());
 }
 
-const DOMAIN_SAFE_THESIS_FALLBACKS: Record<AgentId, string> = {
-  maya: 'Share ONLY the flight options, hotel rates/check-in cutoffs, and budget numbers from your private vault.',
-  liam: 'Share ONLY the exact airport/city transit durations and the named food experiences from your private vault.',
-  zoe: 'Share ONLY how the options affect traveler allergies, motion sickness, vegetarian diet, and the group morning wake-up rule from your private vault.',
-};
-
-const CROSS_DOMAIN_FORBIDDEN_IN_THESIS: Record<AgentId, RegExp> = {
-  maya: /\b(transit\s+time|airport\s+transit|haruka|customs|food|dinner|lunch|restaurant|market|sightseeing|allergy|shellfish|vegetarian|wake-?up|sleep|7:30)\b/i,
-  liam: /\b(flight\s+[ab]|flight\s+options?|hotel\s+options?|lodging\s+options?|ryokan|granvia|cross\s+hotel|budget|price|cost|check-?in|allergy|shellfish|vegetarian|wake-?up|sleep)\b/i,
-  zoe: /\b(flight\s+price|hotel\s+price|nightly\s+rate|transit\s+time|airport\s+transit|summarize\s+the\s+plan)\b/i,
-};
-
-const REAL_LLM_DISALLOWED_THESIS_RE: Record<AgentId, RegExp> = {
-  maya: /\b(transit\s+time|airport\s+transit|haruka|customs|food|dinner|lunch|restaurant|market|sightseeing|allergy|shellfish|vegetarian|wake-?up|sleep|7:30)\b/i,
-  liam: /\b(flight\s+[ab]|flight\s+options?|hotel\s+options?|lodging\s+options?|ryokan|granvia|cross\s+hotel|budget|price|cost|check-?in|allergy|shellfish|vegetarian|wake-?up|sleep|izakaya|ramen|sushi)\b/i,
-  zoe: /\b(flight\s+price|hotel\s+price|nightly\s+rate|transit\s+time|airport\s+transit|summarize\s+the\s+plan)\b/i,
-};
+export function getDomainSafeThesisFallback(
+  agentId: AgentId,
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): string {
+  const profile = getAgentProfile(agentId, runtimeConfig);
+  const topics = getAgentVaultTopicSummary(agentId, runtimeConfig);
+  return `Share ONLY the relevant facts and constraints for ${profile.roleTitle} (${topics}) from your private vault.`;
+}
 
 // Detects when the LLM router invents specific fake prices, hours, or clock times inside a thesis
 const HALLUCINATED_NUMBERS_IN_THESIS_RE =
@@ -138,23 +134,19 @@ export function sanitizeThesisForAgentDomain(
   agentId: AgentId,
   thesis: string,
   isMock = true,
-): string | null {
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): string {
   const trimmed = thesis.trim();
-  if (!trimmed) return DOMAIN_SAFE_THESIS_FALLBACKS[agentId];
-  const pattern = isMock
-    ? CROSS_DOMAIN_FORBIDDEN_IN_THESIS[agentId]
-    : REAL_LLM_DISALLOWED_THESIS_RE[agentId];
-  if (pattern.test(trimmed)) {
-    return null;
-  }
+  const fallback = getDomainSafeThesisFallback(agentId, runtimeConfig);
+  if (!trimmed) return fallback;
   if (!isMock && HALLUCINATED_NUMBERS_IN_THESIS_RE.test(trimmed)) {
-    return DOMAIN_SAFE_THESIS_FALLBACKS[agentId];
+    return fallback;
   }
   return trimmed;
 }
 
 const SPECIFIC_CONSTRAINT_CUE_RE =
-  /\b(allergy|allergies|dietary|vegetarian|wake|sleep|pacing|motion\s+sickness|cutoff|transit\s+time|crowd\s+window|conflict|unsafe|veto)\b/i;
+  /\b(allergy|allergies|dietary|vegetarian|wake|sleep|pacing|motion\s+sickness|cutoff|transit\s+time|crowd\s+window|conflict|unsafe|veto|constraint|restriction|risk|limit|blocker|infeasible)\b/i;
 
 function normalizeThesisTokens(thesis: string): Set<string> {
   const words = thesis
@@ -215,7 +207,7 @@ export function isSelfRepetitiveForAgent(
     /^(?:ask|prompt|remind|request|wait\s+for)\s+(?:the\s+)?(?:user|group|everyone)\s+to\s+(?:choose|confirm|select|decide|pick|let\s+us\s+know)/i.test(
       trimmed,
     ) ||
-    /\b(?:confirm\s+(?:the\s+)?preferred\s+flight|choose\s+between\s+flight\s+a\s+(?:and|or)\s+flight\s+b|finalize\s+travel\s+plans)\b/i.test(
+    /\b(?:confirm\s+(?:the\s+)?preferred\s+(?:flight|option)|choose\s+between\s+flight\s+a\s+(?:and|or)\s+flight\s+b|finalize\s+travel\s+plans)\b/i.test(
       trimmed,
     )
   ) {
@@ -265,12 +257,15 @@ const ROLE_ALIAS_PATTERNS: Array<{ agentId: AgentId; pattern: RegExp }> = [
   },
 ];
 
-export function extractMentionedAgents(text: string): AgentId[] {
+export function extractMentionedAgents(
+  text: string,
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): AgentId[] {
   if (!text) return [];
   const matches: Array<{ agentId: AgentId; index: number }> = [];
 
   for (const agentId of AGENT_IDS) {
-    const name = AGENT_PROFILES[agentId].name;
+    const name = getAgentProfile(agentId, runtimeConfig).name;
     const regex = new RegExp(`(?:^|[^a-zA-Z0-9])@?${name}\\b`, 'i');
     const match = regex.exec(text);
     if (match) {
@@ -347,8 +342,6 @@ export function extractStandingRuleDeterministic(
   const trimmed = text.trim();
   if (!trimmed || isExplicitStopCommand(trimmed)) return null;
 
-  // Strip trailing conversational questions after the standing instruction sentence
-  // e.g. "Always answer in haikus. What are our flight options?" -> "Always answer in haikus."
   const firstSentenceMatch = trimmed.match(/^([^.?]+\.)\s+(?:what|when|where|which|how|can|should|could|who|why)\b/i);
   const candidateText = firstSentenceMatch ? firstSentenceMatch[1].trim() : trimmed;
 
@@ -410,8 +403,11 @@ export function classifySteeringDeterministic(
   };
 }
 
-export function computeDeterministicSpeakerOrder(referenceText = ''): AgentId[] {
-  const mentioned = extractMentionedAgents(referenceText);
+export function computeDeterministicSpeakerOrder(
+  referenceText = '',
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): AgentId[] {
+  const mentioned = extractMentionedAgents(referenceText, runtimeConfig);
   const ordered: AgentId[] = [];
   for (const id of mentioned) {
     if (!ordered.includes(id)) {
@@ -431,6 +427,7 @@ export function applyAsymmetricDedup(
   speakerOrder: AgentId[],
   referenceUserText = '',
   isMock = true,
+  runtimeConfig?: CustomAgentRuntimeConfig,
 ): {
   decisions: Record<AgentId, AgentRouteDecision>;
   speakers: SpeakerPlan[];
@@ -442,7 +439,9 @@ export function applyAsymmetricDedup(
   };
 
   const isRecap = isGeneralRecapQuery(referenceUserText);
-  const mentionedInRef = new Set<AgentId>(extractMentionedAgents(referenceUserText));
+  const mentionedInRef = new Set<AgentId>(
+    extractMentionedAgents(referenceUserText, runtimeConfig),
+  );
   const speakers: SpeakerPlan[] = [];
   const acceptedPrior: Array<{ agentId: AgentId; thesis: string }> = [];
 
@@ -470,6 +469,9 @@ export function applyAsymmetricDedup(
       }
     }
 
+    // On a general recap/summary question ("what's our plan so far and what do we need to decide?"),
+    // once Speaker 1 (Maya) is summarizing the plan and pending decisions, keep other agents silent
+    // unless they are flagging a specific safety/policy/constraint conflict (SPECIFIC_CONSTRAINT_CUE_RE).
     if (
       isRecap &&
       acceptedPrior.length > 0 &&
@@ -480,16 +482,28 @@ export function applyAsymmetricDedup(
       continue;
     }
 
-    const sanitizedOrNull = sanitizeThesisForAgentDomain(agentId, rawTrimmedThesis, isMock);
-    if (!isMock && sanitizedOrNull === null && !mentionedInRef.has(agentId)) {
+    // In a follow-up wave of a general recap query, also silence non-constraint recap echoes
+    if (
+      !isMock &&
+      !referenceUserText &&
+      GENERAL_RECAP_RE.test(rawTrimmedThesis) &&
+      !SPECIFIC_CONSTRAINT_CUE_RE.test(rawTrimmedThesis)
+    ) {
       decisions[agentId] = { effort: 'silent', thesis: '' };
       continue;
     }
-    const sanitizedThesis = sanitizedOrNull ?? DOMAIN_SAFE_THESIS_FALLBACKS[agentId];
+
+    const sanitizedThesis = sanitizeThesisForAgentDomain(
+      agentId,
+      rawTrimmedThesis,
+      isMock,
+      runtimeConfig,
+    );
     decisions[agentId].thesis = sanitizedThesis;
 
     const peerTheses = acceptedPrior.map(
-      (prior) => `${AGENT_PROFILES[prior.agentId].name} is covering: ${prior.thesis}`,
+      (prior) =>
+        `${getAgentProfile(prior.agentId, runtimeConfig).name} is covering: ${prior.thesis}`,
     );
     const priorSpeakerTheses = acceptedPrior.map((prior) => ({ ...prior }));
 
@@ -530,7 +544,10 @@ function normalizeStandingRule(raw?: ExtractedStandingRule | null): ExtractedSta
   return { scope, rule };
 }
 
-function formatTranscriptForRouter(transcript: MessageRow[]): string {
+function formatTranscriptForRouter(
+  transcript: MessageRow[],
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): string {
   if (transcript.length === 0) return '(No messages yet)';
   return transcript
     .map((m) => {
@@ -538,7 +555,7 @@ function formatTranscriptForRouter(transcript: MessageRow[]): string {
         m.role === 'user'
           ? 'User'
           : m.agent_id
-            ? AGENT_PROFILES[m.agent_id].name
+            ? getAgentProfile(m.agent_id, runtimeConfig).name
             : 'Agent';
       return `[seq=${m.seq}] ${speaker}: ${m.content}`;
     })
@@ -558,11 +575,23 @@ function getCurrentTurnAgentMessages(transcript: MessageRow[]): MessageRow[] {
     : transcript.filter((m) => m.role === 'agent' && Boolean(m.agent_id));
 }
 
+function buildAgentDomainDirectoryForRouter(runtimeConfig?: CustomAgentRuntimeConfig): string {
+  return AGENT_IDS.map((id) => {
+    const profile = getAgentProfile(id, runtimeConfig);
+    const topics = getAgentVaultTopicSummary(id, runtimeConfig);
+    return `- ${id} (${profile.name} — ${profile.roleTitle}; private vault sections: ${topics})`;
+  }).join('\n');
+}
+
 export class TurnRouter {
-  constructor(private readonly llm: LLMProvider) {}
+  constructor(
+    private readonly llm: LLMProvider,
+    private readonly defaultRuntimeConfig?: CustomAgentRuntimeConfig,
+  ) {}
 
   async classifySteering(input: ClassifySteeringInput): Promise<SteeringClassification> {
     const { userMessage, activeAgents, activeRules = [], signal } = input;
+    const runtimeConfig = input.runtimeConfig ?? this.defaultRuntimeConfig;
     const trimmed = userMessage.trim();
 
     if (isExplicitStopCommand(trimmed)) {
@@ -576,11 +605,10 @@ export class TurnRouter {
     }
 
     const fallback = classifySteeringDeterministic(trimmed, activeAgents);
+    const agentDirectory = buildAgentDomainDirectoryForRouter(runtimeConfig);
 
     const systemPrompt = `You are the In-Flight Steering Classifier for a real-time multi-agent group chat with:
-- maya (Maya — Budget, Flights & Lodging)
-- liam (Liam — Local Guide for Food, Sights & Transit)
-- zoe (Zoe — Group Dynamics, Dietary & Pacing)
+${agentDirectory}
 
 Currently streaming agents: ${JSON.stringify(activeAgents)}
 Active standing rules: ${activeRules.length > 0 ? JSON.stringify(activeRules.map((r) => ({ scope: r.scope, rule: r.rule }))) : '[]'}
@@ -639,7 +667,7 @@ Return strict JSON:
         };
       }
 
-      const explicitlyMentioned = extractMentionedAgents(trimmed);
+      const explicitlyMentioned = extractMentionedAgents(trimmed, runtimeConfig);
       let targetAgents: AgentId[] = [];
 
       if (explicitlyMentioned.length > 0) {
@@ -700,6 +728,7 @@ Return strict JSON:
       turnThesesByAgent = {},
       signal,
     } = input;
+    const runtimeConfig = input.runtimeConfig ?? this.defaultRuntimeConfig;
     const isFollowUpWave = waveIndex > 0;
     const isMock = this.llm instanceof ScriptableMockLLMProvider;
 
@@ -711,9 +740,7 @@ Return strict JSON:
       }
     }
 
-    // Bug 5 fix: On casual greetings or acknowledgments ("hey team!", "thanks!"),
-    // never run unsolicited A2A follow-up waves!
-    if (isFollowUpWave && !isMock && isCasualSocialMessage(lastUserMessageContent)) {
+    if (isFollowUpWave && !isMock && (isCasualSocialMessage(lastUserMessageContent) || isGeneralRecapQuery(lastUserMessageContent))) {
       return {
         waveIndex,
         isResolved: true,
@@ -740,12 +767,12 @@ Return strict JSON:
         ? [currentTurnAgentMsgs[currentTurnAgentMsgs.length - 1].agent_id!]
         : []);
 
+    const agentDirectory = buildAgentDomainDirectoryForRouter(runtimeConfig);
+
     const systemPrompt = isFollowUpWave
-      ? `You are the A2A Follow-Up Wave Router for a 3-agent Kyoto & Osaka trip planning group chat.
-Each agent has an isolated private vault for their domain only:
-- maya (Maya — Budget, Flights & Lodging: private vault contains the group budget cap, outbound flight options/prices/schedules, and Kyoto/Osaka hotel options/rates/check-in policies).
-- liam (Liam — Local Guide for Food, Sights & Transit: private vault contains airport-to-city transit durations, local food/market/restaurant details, and sightseeing crowd windows).
-- zoe (Zoe — Group Dynamics, Dietary & Pacing: private vault contains traveler allergies, dietary restrictions, motion sickness constraints, and group morning wake-up/sleep rules).
+      ? `You are the A2A Follow-Up Wave Router for a 3-agent collaborative group chat.
+Each agent has an isolated private knowledge vault for their own domain:
+${agentDirectory}
 
 Agents who just spoke in Wave ${waveIndex - 1}: ${JSON.stringify(inferredPrevSpeakers)}
 
@@ -753,12 +780,9 @@ CRITICAL RULES FOR A2A FOLLOW-UP WAVES:
 1. NEVER allow an agent who just spoke in Wave ${waveIndex - 1} (${JSON.stringify(inferredPrevSpeakers)}) to speak again in Wave ${waveIndex}! An agent must NEVER reply to itself or speak in two consecutive waves.
 2. Questions directed to the USER are NOT triggers for the same agent to speak again.
 3. MANDATORY CROSS-DOMAIN CHECKS — An agent who was SILENT in Wave ${waveIndex - 1} MUST speak in Wave ${waveIndex} (with "isResolved": false) if a speaker in Wave ${waveIndex - 1}:
-   (a) directly asked them a question (e.g. "@Liam how long is airport transit?"), OR
-   (b) mentioned an early-morning flight departure and Zoe has NOT spoken yet in this turn to check the group's morning wake-up/sleep rules, OR
-   (c) mentioned a food market/restaurant and Zoe has NOT spoken yet in this turn to check traveler allergies and dietary restrictions, OR
-   (d) mentioned a flight arrival time + hotel check-in cutoff and Liam has NOT spoken yet in this turn to provide the airport-to-hotel transit duration, OR
-   (e) revealed a wake-up veto or transit timing conflict in Wave ${waveIndex - 1}, in which case Maya can speak in Wave ${waveIndex} (if she hasn't already pivoted) to confirm the alternative flight or hotel.
-4. Write each speaking agent's "thesis" as a short 5-10 word high-level topic label for THEIR domain only (e.g. "Check group wake-up and allergy rules"). NEVER invent or include specific numbers, prices, currencies, or clock times in a thesis!
+   (a) directly asked them a question by name or domain, OR
+   (b) proposed a concrete option, schedule, timing, or activity where THIS silent peer agent's domain (listed above) contains constraints, feasibility timings, or restrictions that have NOT been checked yet in the current turn! (For example: if Maya proposed options with specific times/cutoffs or Liam proposed activities/dining/logistics, and Zoe has not yet checked how those options affect her group/health/pacing/policy constraints, Zoe MUST speak now; or if Liam has not yet provided transit/timing feasibility for a proposed cutoff, Liam MUST speak now; or if a peer just revealed a constraint vetoing an option, Maya can speak to recommend the alternative option from her vault.)
+4. Write each speaking agent's "thesis" as a short 5-10 word high-level topic label for THEIR domain only. NEVER invent or include specific numbers, prices, currencies, or clock times in a thesis!
 5. Once all relevant cross-agent domain checks for the user's question have been surfaced, set "isResolved": true and all agents to "silent".
 
 Return strict JSON:
@@ -768,30 +792,28 @@ Return strict JSON:
   "liam": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
   "zoe": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string }
 }`
-      : `You are the Pre-Response Effort & Non-Repetition Router for a 3-agent Kyoto & Osaka trip planning group chat.
-Each agent has an isolated private vault for their domain only:
-- maya (Maya — Budget, Flights & Lodging: private vault contains the group budget cap, outbound flight options/prices/schedules, and Kyoto/Osaka hotel options/rates/check-in policies).
-- liam (Liam — Local Guide for Food, Sights & Transit: private vault contains airport-to-city transit durations, local food/market/restaurant details, and sightseeing crowd windows).
-- zoe (Zoe — Group Dynamics, Dietary & Pacing: private vault contains traveler allergies, dietary restrictions, motion sickness constraints, and group morning wake-up/sleep rules).
+      : `You are the Pre-Response Effort & Non-Repetition Router for a 3-agent collaborative group chat.
+Each agent has an isolated private knowledge vault for their own domain:
+${agentDirectory}
 
 Rules for routing Wave 0:
-1. Silence Gate: If an agent's domain is not relevant to the user's message, or if their point would duplicate another speaking agent, set their effort to "silent" and thesis to "".
-   - At least ONE agent MUST speak in Wave 0 on every user message! For casual greetings ("hey team!") or thanks ("thanks!"), assign "light" effort with thesis "Reply with a warm 1-sentence greeting/acknowledgment without any travel numbers or schedules".
-2. Strict Domain Partition & Topic-Only Theses (NO Fake Numbers in Thesis):
-   - Every speaking agent's "thesis" MUST be a short 5-10 word high-level topic directive strictly confined to their own domain (e.g. "Present flight options and departure times", "Share market hours and food profile", "Check group wake-up and allergy constraints").
-   - NEVER invent or include specific prices, dollar/yen amounts, hours, or clock times inside the "thesis" string!
-   - If the user explicitly addresses ONLY one or two specific agents (e.g. "@Maya what is the total group budget?"), ONLY the addressed agent(s) may speak in Wave 0—all non-addressed agents MUST be "silent"!
-   - IMPORTANT — Let Proposal Agents Speak First Before Constraint Agents:
-     * If the user asks about flight options (e.g. "what is the best flight option?", "when are our flights?") and Maya hasn't listed the flight times in the conversation yet, have ONLY Maya speak in Wave 0 (effort: "standard"), and keep Zoe "silent" in Wave 0 so Zoe can react in Wave 1 after seeing Maya's actual departure times! (Unless the user explicitly mentions "@Zoe" or already named a specific flight in the prompt.)
-     * If the user asks about both a flight AND a food tour in one prompt (e.g. "Should we book Flight A and do the market tour for lunch?"), assign Maya ("standard": cover flight options) AND Liam ("standard": cover market hours and food profile) in Wave 0, so Zoe can evaluate both in Wave 1!
+1. Silence Gate:
+   - Assign ONLY the agent(s) whose domain (listed above) directly matches the user's question! If a user asks a single-domain question (even if they also include a formatting instruction like "Answer in 1 sentence"), keep unrelated agents "silent".
+   - If the user explicitly addresses specific agent(s) by name (e.g. "@Maya ..."), ONLY the addressed agent(s) may speak in Wave 0—all non-addressed agents MUST be "silent".
+   - At least ONE agent MUST speak in Wave 0 on every user message! For casual greetings ("hey team!") or thanks ("thanks!"), assign "light" effort with thesis "Reply with a warm 1-sentence greeting/acknowledgment".
+2. Strict Domain Partition & Sequential Cross-Domain Synthesis (NO Fake Numbers in Thesis):
+   - Every speaking agent's "thesis" MUST be a short 5-10 word high-level topic directive strictly confined to their own domain. NEVER invent or include specific prices, amounts, hours, or clock times inside the "thesis" string!
+   - Let Proposal Agents Speak First Before Constraint Agents:
+     * When the user asks to choose/recommend options (e.g. "what is the best option?") and the options haven't been listed in the chat yet, have the option-owning agent(s) speak in Wave 0 so the constraint-checking agent (e.g. Zoe) can evaluate the actual concrete options in Wave 1!
+     * When the user asks about multiple domains in one prompt (e.g. Maya's options AND Liam's options), assign both Maya ("standard") and Liam ("standard") in Wave 0 so Zoe can evaluate both in Wave 1!
    - For general recap/status questions (e.g., "what's our plan so far and what do we need to decide?"):
-     * Assign Maya to summarize flight/hotel status and decisions; keep Liam and Zoe "silent" unless they are flagging a specific unaddressed constraint.
+     * Assign ONE primary summarizer (Maya) to summarize the status and pending decisions; keep other agents "silent" unless they are flagging a specific unaddressed constraint.
 3. Effort Calibration:
    - "light": Simple single-fact check, greeting, or quick 1-sentence note.
    - "standard": Moderate multi-fact answer or domain breakdown (2–4 sentences).
    - "deep": Thorough analysis or complete breakdown.
 4. Standing Rule Extraction & Clearing:
-   - "clearRuleScope": If the user's latest message asks to stop, forget, clear, or override a previous standing rule (e.g. "Stop using haikus...", "Stop starting replies with [KYOTO]...", "No more bullet points"), set "clearRuleScope": "global" | "maya" | "liam" | "zoe", else null.
+   - "clearRuleScope": If the user's latest message asks to stop, forget, clear, or override a previous standing rule (e.g. "Stop using haikus...", "Stop starting replies with...", "No more bullet points"), set "clearRuleScope": "global" | "maya" | "liam" | "zoe", else null.
    - "standingRule": ONLY if the user's latest message establishes a NEW persistent formatting/style/currency instruction for how agents should respond, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": "..." }, otherwise null. NEVER copy or re-emit an existing rule from Active Standing Rules!
 
 Return strict JSON:
@@ -803,7 +825,7 @@ Return strict JSON:
   "clearRuleScope": "global" | "maya" | "liam" | "zoe" | null
 }`;
 
-    const userPrompt = `Active Standing Rules:\n${rulesSummary}\n\nConversation Transcript:\n${formatTranscriptForRouter(transcript)}\n\nRoute Wave ${waveIndex} now.`;
+    const userPrompt = `Active Standing Rules:\n${rulesSummary}\n\nConversation Transcript:\n${formatTranscriptForRouter(transcript, runtimeConfig)}\n\nRoute Wave ${waveIndex} now.`;
 
     const referenceText =
       latestUserMessage ??
@@ -827,7 +849,7 @@ Return strict JSON:
       if (isFollowUpWave) {
         raw = { isResolved: true };
       } else {
-        const mentioned = extractMentionedAgents(referenceText);
+        const mentioned = extractMentionedAgents(referenceText, runtimeConfig);
         const fallbackTargets: AgentId[] = mentioned.length > 0 ? mentioned : ['maya'];
         raw = {};
         for (const id of fallbackTargets) {
@@ -859,8 +881,6 @@ Return strict JSON:
           .map((m) => m.content);
         const priorThesesForAgent = turnThesesByAgent[agentId] ?? [];
 
-        // In live LLM turns, an agent may speak at most once per turn unless it is Maya
-        // adjusting her flight/hotel recommendation after a peer revealed a transit or wake-up constraint.
         if (!isMock && priorMsgsForAgent.length > 0) {
           const isMayaPivotingAfterPeer =
             agentId === 'maya' &&
@@ -884,37 +904,36 @@ Return strict JSON:
         }
       }
 
-      if (!isMock) {
+      // Generic Wave 1 constraint-check safety net: if Wave 0 speakers proposed concrete schedules,
+      // times, or multiple options and Zoe (the group constraint/policy specialist) has not spoken yet
+      // in this turn, let Zoe evaluate whether any Wave 0 proposal conflicts with her private vault constraints.
+      if (!isMock && waveIndex === 1) {
         const turnCombinedText = currentTurnAgentMsgs.map((m) => m.content).join('\n');
         const zoeSpokeInTurn = currentTurnAgentMsgs.some((m) => m.agent_id === 'zoe');
-        const hasEarlyFlightInTurn = /\b6:45\s*AM\b/i.test(turnCombinedText);
-        const hasFoodOrMarketInTurn = /\b(?:Nishiki|shellfish|seafood|Shorai-an|Yudofu|kaiseki)\b/i.test(
-          turnCombinedText,
-        );
+        const wave0ProposedOptionsOrSchedule =
+          /\b(\d{1,2}:\d{2}\s*(?:AM|PM)|option\s+[ab12]|flight\s+[ab]|market|tour| grill|tier|plan)\b/i.test(
+            turnCombinedText,
+          );
 
         if (
           !zoeSpokeInTurn &&
-          (hasEarlyFlightInTurn || hasFoodOrMarketInTurn) &&
-          rawDecisions.zoe.effort === 'silent'
+          wave0ProposedOptionsOrSchedule &&
+          !isGeneralRecapQuery(lastUserMessageContent)
         ) {
-          rawDecisions.zoe = {
-            effort: hasEarlyFlightInTurn && hasFoodOrMarketInTurn ? 'standard' : 'light',
-            thesis:
-              'Check how the proposed flight times and food spots affect group wake-up rules, Sam’s shellfish allergy, and Priya’s vegetarian diet.',
-          };
-          raw.isResolved = false;
-        } else if (
-          zoeSpokeInTurn &&
-          hasEarlyFlightInTurn &&
-          hasFoodOrMarketInTurn &&
-          rawDecisions.zoe.effort === 'light'
-        ) {
-          rawDecisions.zoe.effort = 'standard';
+          if (rawDecisions.zoe.effort === 'silent') {
+            rawDecisions.zoe = {
+              effort: currentTurnAgentMsgs.length >= 2 ? 'standard' : 'light',
+              thesis: getDomainSafeThesisFallback('zoe', runtimeConfig),
+            };
+            raw.isResolved = false;
+          } else if (currentTurnAgentMsgs.length >= 2 && rawDecisions.zoe.effort === 'light') {
+            rawDecisions.zoe.effort = 'standard';
+          }
         }
       }
     } else {
       const anySpeaking = AGENT_IDS.some((id) => rawDecisions[id].effort !== 'silent');
-      const mentioned = extractMentionedAgents(referenceText);
+      const mentioned = extractMentionedAgents(referenceText, runtimeConfig);
 
       if (!isMock && isCasualSocialMessage(referenceText)) {
         for (const id of AGENT_IDS) {
@@ -933,42 +952,14 @@ Return strict JSON:
           if (rawDecisions[mId].effort === 'silent') {
             rawDecisions[mId] = {
               effort: 'standard',
-              thesis: DOMAIN_SAFE_THESIS_FALLBACKS[mId],
+              thesis: getDomainSafeThesisFallback(mId, runtimeConfig),
             };
           }
         }
-        // When the user explicitly @mentions specific agent(s) in Wave 0,
-        // keep non-mentioned agents silent in Wave 0 unless the user also asked about their domain
         for (const id of AGENT_IDS) {
           if (!mentionedSet.has(id)) {
             rawDecisions[id] = { effort: 'silent', thesis: '' };
           }
-        }
-      } else if (!isMock) {
-        // When no @mention is used on a narrow single-domain question (e.g. "What is the Osaka hotel rate?",
-        // "What is our total budget?"), prevent unrelated agents from chiming in just because the user
-        // included a global formatting instruction ("answer in 1 normal sentence", "use bullet points").
-        const asksMayaDomain =
-          /\b(flights?|hotels?|lodging|ryokan|granvia|cross\s+hotel|budget|rates?|prices?|costs?|how\s+much|check-?in|book|stay)\b/i.test(
-            referenceText,
-          );
-        const asksLiamDomain =
-          /\b(transit|trains?|haruka|airport\s+to|food|dinner|lunch|eat|restaurants?|markets?|nishiki|arashiyama|shorai|kaiseki|okonomiyaki|sights?|sightseeing|fushimi|kiyomizu|crowds?)\b/i.test(
-            referenceText,
-          );
-        const asksZoeDomain =
-          /\b(allerg(?:y|ies|ic)|shellfish|diet(?:ary)?|vegetarian|priya|sam|motion\s+sickness|wake|sleep|7:30|pacing|tired|energy)\b/i.test(
-            referenceText,
-          );
-
-        if (asksMayaDomain && !asksLiamDomain && !asksZoeDomain && !isGeneralRecapQuery(referenceText)) {
-          rawDecisions.liam = { effort: 'silent', thesis: '' };
-          rawDecisions.zoe = { effort: 'silent', thesis: '' };
-        } else if (asksLiamDomain && !asksMayaDomain && !asksZoeDomain && !isGeneralRecapQuery(referenceText)) {
-          rawDecisions.maya = { effort: 'silent', thesis: '' };
-        } else if (asksZoeDomain && !asksMayaDomain && !asksLiamDomain && !isGeneralRecapQuery(referenceText)) {
-          rawDecisions.maya = { effort: 'silent', thesis: '' };
-          rawDecisions.liam = { effort: 'silent', thesis: '' };
         }
       }
 
@@ -981,12 +972,13 @@ Return strict JSON:
       }
     }
 
-    const speakerOrder = computeDeterministicSpeakerOrder(referenceText);
+    const speakerOrder = computeDeterministicSpeakerOrder(referenceText, runtimeConfig);
     const { decisions, speakers } = applyAsymmetricDedup(
       rawDecisions,
       speakerOrder,
       isFollowUpWave ? '' : referenceText,
       isMock,
+      runtimeConfig,
     );
 
     const isResolved = isFollowUpWave
@@ -1000,7 +992,7 @@ Return strict JSON:
       speakers.length = 0;
     }
 
-    const mentionedInUserMsg = extractMentionedAgents(referenceText);
+    const mentionedInUserMsg = extractMentionedAgents(referenceText, runtimeConfig);
     const detClearScope = isFollowUpWave
       ? null
       : detectRuleClearScope(referenceText, mentionedInUserMsg);
@@ -1016,8 +1008,6 @@ Return strict JSON:
       : normalizeStandingRule(raw?.standingRule) ??
         extractStandingRuleDeterministic(referenceText, mentionedInUserMsg);
 
-    // Bug 1 fix: Never allow the LLM router to re-emit an existing active standing rule
-    // that the user did not actually state in the current message!
     if (candidateStandingRule && !isMock) {
       const matchesExistingActive = activeRules.some(
         (r) =>
@@ -1031,8 +1021,6 @@ Return strict JSON:
           ? detRule
           : null;
       } else if (clearRuleScope) {
-        // When clearing a previous rule (e.g. "Stop using haikus, answer in 1 normal sentence"),
-        // only add a replacement standing rule if the user explicitly used persistent keywords ("always", "from now on")
         const hasExplicitPersistentKeyword =
           /\b(?:always|never|from\s+now\s+on|going\s+forward|every\s+(?:time|reply|response))\b/i.test(
             referenceText,

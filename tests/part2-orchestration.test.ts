@@ -164,7 +164,7 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
         'Maya is covering: Cover Flight B $820 price and Ryokan Gion 6:00 PM check-in cutoff',
       );
       expect(liamSysPrompt).toContain(
-        'Do not list or repeat flight options/prices or hotel bookings/nightly rates/check-in policies',
+        'Do not list, summarize, or repeat options or prices from your peers’ domains',
       );
     });
 
