@@ -599,7 +599,7 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
 
       await orchestrator.handleUserMessage('what is the best flight option?');
 
-      // Inspect the router prompt sent to completeJSON: it must NOT contain any private vault facts!
+      // Inspect the router prompt sent to completeJSON: it must NOT contain any private vault numbers, prices, times, or medical secrets!
       const routerSystemPrompt = mockLLM.jsonCalls[0].messages[0].content;
       const forbiddenVaultLiteralsInRouter = [
         '7:30',
@@ -610,8 +610,8 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
         '6:00 PM',
         '2h 15m',
         'shellfish',
-        'Shorai-an',
-        'Granvia',
+        'EpiPen',
+        'Anaphylactic',
       ];
       for (const secretFact of forbiddenVaultLiteralsInRouter) {
         expect(routerSystemPrompt).not.toContain(secretFact);

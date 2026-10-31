@@ -102,7 +102,7 @@ export function buildConversationHistoryForAgent(
 }
 
 const LEADING_META_DISCLAIMER_RE =
-  /^(?:I\s+(?:can(?:'t|’t|not)|only)\s+(?:provide|summarize|share|help\s+with|cover)\s+[^,.!\n]+(?:,\s*but\s+|\s*[.!]\s*)|I(?:'m|’m|\s+am)\s+focused\s+on\s+[^,.\n]+,\s*so\s+(?:I(?:'ll|’ll|\s+will)\s+(?:share|note|mention)\s+that\s+)?)/i;
+  /^(?:(?:Regarding\s+[^,.\n]+,\s*)?I\s+(?:can(?:'t|’t|not)|don(?:'t|’t)|do\s+not|only)\s+(?:provide|summarize|share|help\s+with|cover|have)\s+[^,.!\n]+(?:,\s*but\s+|\s*[.!]\s*)|I(?:'m|’m|\s+am)\s+focused\s+on\s+[^,.\n]+,\s*so\s+(?:I(?:'ll|’ll|\s+will)\s+(?:share|note|mention)\s+that\s+)?)/i;
 
 export function stripLeadingMetaDisclaimer(text: string): string {
   const match = text.match(LEADING_META_DISCLAIMER_RE);

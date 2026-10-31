@@ -102,9 +102,11 @@ export function loadAgentPrivateContext(
 }
 
 /**
- * Extracts high-level markdown section headings (`#` / `##` / `###`) from an agent's vault
- * without exposing any underlying bullet facts, entity names, numbers, or private details.
- * This allows the router prompt to dynamically adapt if the user swaps out the markdown files!
+ * Extracts high-level markdown section headings (`#` / `##` / `###`) and bolded option/entity names
+ * (`**...**`) from an agent's vault while stripping any numbers, prices, times, or medical/allergy
+ * secrets so zero private constraints leak into the router prompt!
+ * This allows the router to dynamically know which named items live in which agent's vault
+ * across ANY scenario (Kyoto trip, B2B cloud architecture, product launch, etc.).
  */
 export function getAgentVaultTopicSummary(
   agentId: AgentId,
@@ -112,19 +114,41 @@ export function getAgentVaultTopicSummary(
 ): string {
   try {
     const rawVault = loadAgentPrivateContext(agentId, runtimeConfig);
-    const headings = rawVault
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => /^#{2,3}\s+/.test(line))
-      .map((line) =>
-        line
+    const topics: string[] = [];
+
+    for (const rawLine of rawVault.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (/^#{2,3}\s+/.test(line)) {
+        const heading = line
           .replace(/^#{2,3}\s+/, '')
           .replace(/\(.*?\)/g, '')
-          .trim(),
-      )
-      .filter(Boolean);
-    if (headings.length > 0) {
-      return headings.join('; ');
+          .replace(/\b\d[\d:.,]*\s*(?:AM|PM|USD|JPY|EUR|hours?|hrs?|mins?|minutes?)?\b/gi, '')
+          .trim();
+        if (heading) topics.push(heading);
+        continue;
+      }
+
+      const itemMatch = line.match(/^(?:\d+[.)]|[-*•])\s+\*\*([^*:]+)\*\*\s*(?::|$)/);
+      if (itemMatch) {
+        const itemLabel = itemMatch[1]
+          .replace(/\(.*?\)/g, '')
+          .replace(/—.*$/, '')
+          .replace(/\b\d[\d:.,]*\s*(?:AM|PM|USD|JPY|EUR|hours?|hrs?|mins?|minutes?)?\b/gi, '')
+          .trim();
+        if (
+          itemLabel &&
+          itemLabel.length >= 4 &&
+          !/^(?:departure|arrival|price|notes|nightly\s+rate|check-?in|operating\s+window|food\s+profile|dietary\s+profile|hours|reserved|locked|negotiated|strict|total|currency|unbooked|insider|severe|allergy|motion\s+sickness|no\s+waking|midday)\b/i.test(
+            itemLabel,
+          )
+        ) {
+          topics.push(itemLabel);
+        }
+      }
+    }
+
+    if (topics.length > 0) {
+      return Array.from(new Set(topics)).join('; ');
     }
   } catch {
     // Fallback to roleTitle if vault file cannot be read

@@ -52,8 +52,12 @@ function sendStaticFile(
   contentType: string,
 ): void {
   setCorsHeaders(res);
-  const content =
-    STATIC_ASSET_CACHE.get(fileName) ?? readFileSync(join(CLIENT_DIR, fileName), 'utf-8');
+  let content: string;
+  try {
+    content = readFileSync(join(CLIENT_DIR, fileName), 'utf-8');
+  } catch {
+    content = STATIC_ASSET_CACHE.get(fileName) ?? '';
+  }
   res.writeHead(200, {
     'Content-Type': contentType,
     'Cache-Control': 'no-cache',
@@ -217,6 +221,7 @@ export function createAppServer(options: AppServerOptions = {}): AppServerInstan
       }
     }
   });
+  server.requestTimeout = 0;
 
   const listen = (port = 0, host = '127.0.0.1'): Promise<{ port: number; url: string }> => {
     return new Promise((resolve, reject) => {
