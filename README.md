@@ -4,8 +4,6 @@ A three-agent group chat. Maya, Liam, and Zoe each have a private knowledge vaul
 
 Internal machinery (effort, theses, epochs, standing rules) never reaches the browser.
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for sequence diagrams and the full data model.
-
 ## How it is built
 
 One Node.js process, one port, no queue, no extra containers. The browser is vanilla JS. Persistence is SQLite. Model choice is an `.env` change.
@@ -113,3 +111,5 @@ Default scenario, a 5-day Kyoto & Osaka trip for four friends:
 5. **Silence gate.** *@Maya what is the total group budget?* Liam and Zoe stay silent. Maya answers in one sentence (`light`).
 
 6. **Stop.** Click **Stop** (or type `stop`) while agents are streaming. Everything freezes at the flushed text.
+
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for sequence diagrams and the full data model.
