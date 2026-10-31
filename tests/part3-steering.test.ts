@@ -627,7 +627,23 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
         detectRuleClearScope('yes, nevermind riddles are hard to read lets just talk normally'),
       ).toBe('global');
 
-      // 4. Topic replacement interrupts ("Actually stop, just tell me...", "Wait no, just tell me...")
+      // 4. Selective deactivation by removeRuleIds (e.g. removing riddles while keeping GBP currency rule active!)
+      store.reset();
+      const gbpRule = store.addStandingRule({
+        id: 'rule-gbp',
+        scope: 'global',
+        rule: 'Quote all prices in British Pounds (GBP £).',
+      });
+      const riddleRule = store.addStandingRule({
+        id: 'rule-riddles',
+        scope: 'global',
+        rule: 'Speak in rhyming riddles.',
+      });
+      expect(store.listActiveStandingRules().map((r) => r.id)).toEqual(['rule-gbp', 'rule-riddles']);
+      store.deactivateRulesByIds([riddleRule.id]);
+      expect(store.listActiveStandingRules().map((r) => r.id)).toEqual([gbpRule.id]);
+
+      // 5. Topic replacement interrupts ("Actually stop, just tell me...", "Wait no, just tell me...")
       expect(isTopicReplacementInterrupt('Wait no, just tell me about Osaka')).toBe(true);
       expect(
         isTopicReplacementInterrupt('Actually stop, just tell me our total budget in 1 sentence'),

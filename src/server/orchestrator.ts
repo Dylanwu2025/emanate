@@ -519,6 +519,7 @@ export class GroupChatOrchestrator extends EventEmitter {
           targetAgents: activeAgentIds,
           directive: '',
           standingRule: null,
+          removeRuleIds: [],
           clearRuleScope: null,
         },
       };
@@ -603,29 +604,16 @@ export class GroupChatOrchestrator extends EventEmitter {
         };
       }
 
-      if (classification.clearRuleScope) {
-        const isStyleClear =
-          /\b(?:riddles?|haikus?|poems?|rhymes?|bullet\s+points?|bullets?|uppercase|all\s+caps|prefixes|suffixes|tags|talk\s+normally|speak\s+normally|respond\s+normally|normal\s+(?:tone|english|voice|sentences?)|back\s+to\s+normal)\b/i.test(
-            trimmed,
-          );
-        if (isStyleClear && classification.clearRuleScope === 'global') {
-          const allActive = this.store.listActiveStandingRules();
-          for (const ruleRow of allActive) {
-            if (!/\b(?:usd|jpy|eur|yen|euros?|pounds?|gbp|dollars?|currency|currencies)\b|[€¥£$]/i.test(ruleRow.rule)) {
-              this.store.deactivateStandingRule(ruleRow.id);
-            }
-          }
-        } else {
-          const cleared = this.store.clearStandingRules(classification.clearRuleScope);
-          if (cleared === 0 && classification.clearRuleScope === 'global') {
-            this.store.clearStandingRules('all');
-          }
-        }
+      if (classification.removeRuleIds && classification.removeRuleIds.length > 0) {
+        this.store.deactivateRulesByIds(classification.removeRuleIds);
+      } else if (classification.clearRuleScope) {
+        this.store.clearStandingRules(classification.clearRuleScope);
       }
       if (classification.standingRule) {
         this.store.addStandingRule({
           scope: classification.standingRule.scope,
           rule: classification.standingRule.rule,
+          supersedeRuleIds: classification.removeRuleIds,
         });
       }
 
@@ -843,29 +831,16 @@ export class GroupChatOrchestrator extends EventEmitter {
         wavePlans.push(plan);
 
         if (waveIndex === 0) {
-          if (plan.clearRuleScope) {
-            const isStyleClear =
-              /\b(?:riddles?|haikus?|poems?|rhymes?|bullet\s+points?|bullets?|uppercase|all\s+caps|prefixes|suffixes|tags|talk\s+normally|speak\s+normally|respond\s+normally|normal\s+(?:tone|english|voice|sentences?)|back\s+to\s+normal)\b/i.test(
-                trimmedUserText,
-              );
-            if (isStyleClear && plan.clearRuleScope === 'global') {
-              const allActive = this.store.listActiveStandingRules();
-              for (const ruleRow of allActive) {
-                if (!/\b(?:usd|jpy|eur|yen|euros?|pounds?|gbp|dollars?|currency|currencies)\b|[€¥£$]/i.test(ruleRow.rule)) {
-                  this.store.deactivateStandingRule(ruleRow.id);
-                }
-              }
-            } else {
-              const cleared = this.store.clearStandingRules(plan.clearRuleScope);
-              if (cleared === 0 && plan.clearRuleScope === 'global') {
-                this.store.clearStandingRules('all');
-              }
-            }
+          if (plan.removeRuleIds && plan.removeRuleIds.length > 0) {
+            this.store.deactivateRulesByIds(plan.removeRuleIds);
+          } else if (plan.clearRuleScope) {
+            this.store.clearStandingRules(plan.clearRuleScope);
           }
           if (plan.standingRule) {
             this.store.addStandingRule({
               scope: plan.standingRule.scope,
               rule: plan.standingRule.rule,
+              supersedeRuleIds: plan.removeRuleIds,
             });
           }
         }

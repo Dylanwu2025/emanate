@@ -28,6 +28,7 @@ export interface RawRouterLLMResponse {
   agents?: Partial<Record<AgentId, Partial<AgentRouteDecision>>>;
   isResolved?: boolean;
   standingRule?: ExtractedStandingRule | null;
+  removeRuleIds?: string[] | null;
   clearRuleScope?: RuleScope | null;
 }
 
@@ -46,6 +47,7 @@ export interface WaveRoutingPlan {
   decisions: Record<AgentId, AgentRouteDecision>;
   speakers: SpeakerPlan[];
   standingRule: ExtractedStandingRule | null;
+  removeRuleIds: string[];
   clearRuleScope?: RuleScope | null;
 }
 
@@ -67,6 +69,7 @@ export interface SteeringClassification {
   targetAgents: AgentId[];
   directive: string;
   standingRule: ExtractedStandingRule | null;
+  removeRuleIds: string[];
   clearRuleScope: RuleScope | null;
 }
 
@@ -75,6 +78,7 @@ export interface RawSteeringLLMResponse {
   targetAgents?: AgentId[];
   directive?: string;
   standingRule?: ExtractedStandingRule | null;
+  removeRuleIds?: string[] | null;
   clearRuleScope?: RuleScope | null;
 }
 
@@ -438,6 +442,7 @@ export function classifySteeringDeterministic(
       targetAgents: [...activeAgents],
       directive: '',
       standingRule: null,
+      removeRuleIds: [],
       clearRuleScope: null,
     };
   }
@@ -452,6 +457,7 @@ export function classifySteeringDeterministic(
       targetAgents: [...activeAgents],
       directive: trimmed,
       standingRule,
+      removeRuleIds: [],
       clearRuleScope,
     };
   }
@@ -468,6 +474,7 @@ export function classifySteeringDeterministic(
     targetAgents,
     directive: trimmed,
     standingRule,
+    removeRuleIds: [],
     clearRuleScope,
   };
 }
@@ -669,18 +676,26 @@ export class TurnRouter {
         targetAgents: [...activeAgents],
         directive: '',
         standingRule: null,
+        removeRuleIds: [],
         clearRuleScope: null,
       };
     }
 
     const fallback = classifySteeringDeterministic(trimmed, activeAgents);
     const agentDirectory = buildAgentDomainDirectoryForRouter(runtimeConfig);
+    const formattedRulesWithIds =
+      activeRules.length > 0
+        ? activeRules
+            .map((r) => `- id="${r.id}" [scope=${r.scope}]: ${r.rule}`)
+            .join('\n')
+        : '(None)';
 
     const systemPrompt = `You are the In-Flight Steering Classifier for a real-time multi-agent group chat with:
 ${agentDirectory}
 
 Currently streaming agents: ${JSON.stringify(activeAgents)}
-Active standing rules: ${activeRules.length > 0 ? JSON.stringify(activeRules.map((r) => ({ scope: r.scope, rule: r.rule }))) : '[]'}
+Active Standing Rules:
+${formattedRulesWithIds}
 
 The user just sent a message while the above agents are actively streaming. Classify the user's intent:
 1. "action":
@@ -690,17 +705,17 @@ The user just sent a message while the above agents are actively streaming. Clas
 2. "targetAgents":
    - If the user names or references specific agent(s) by name or role (e.g. "Maya", "@Liam", "budget person"), return ONLY those targeted agent IDs (e.g. ["maya"]).
    - If the redirect is global (no specific agent named, e.g. "Keep it to 1 sentence", "Use bullet points"), return all currently streaming agents: ${JSON.stringify(activeAgents)}.
-3. "directive": Clean 1-line instruction for the targeted agent(s) to follow as they seamlessly continue their in-flight message.
-4. "standingRule": ONLY if the user's NEW message establishes a new persistent instruction for future turns, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": string }, else null. NEVER copy an existing rule from Active standing rules!
-5. "clearRuleScope": If the user asks to stop, forget, clear, or override an existing standing rule (e.g. "Stop using haikus", "Stop starting replies with [KYOTO]", "No more bullet points"), return the scope ("global" | "maya" | "liam" | "zoe"), else null.
+3. "directive": Clean 1-line instruction for the targeted agent(s) to follow as they seamlessly update and complete their in-flight message.
+4. "removeRuleIds": Inspect Active Standing Rules against the user's message. If the user asks to stop, drop, forget, relax, or override any specific existing rule(s) (e.g. "nevermind riddles are hard to read, talk normally", "stop using haikus", "no more [BUDGET-OK]", or gives a new rule that contradicts a specific old rule), return the exact "id" strings of ONLY those superseded/canceled rules in "removeRuleIds": ["..."] while leaving unrelated active rules untouched! Otherwise return [].
+5. "standingRule": ONLY if the user's NEW message establishes a new persistent instruction for future turns, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": "<concise imperative rule ONLY, excluding any follow-up question>" }, else null. NEVER copy an existing rule from Active Standing Rules!
 
 Return strict JSON:
 {
   "action": "steer" | "stop_all" | "new_turn",
   "targetAgents": ["maya" | "liam" | "zoe"],
   "directive": string,
-  "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": string } | null,
-  "clearRuleScope": "global" | "maya" | "liam" | "zoe" | null
+  "removeRuleIds": string[],
+  "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": string } | null
 }`;
 
     const completeOptions = {
@@ -732,6 +747,7 @@ Return strict JSON:
           targetAgents: [...activeAgents],
           directive: '',
           standingRule: null,
+          removeRuleIds: [],
           clearRuleScope: null,
         };
       }
@@ -756,11 +772,19 @@ Return strict JSON:
           ? raw.directive.trim()
           : fallback.directive;
 
-      const clearRuleScope =
-        fallback.clearRuleScope ??
-        (raw.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope) ? raw.clearRuleScope : null);
+      const validActiveIds = new Set(activeRules.map((r) => r.id));
+      const removeRuleIds = Array.isArray(raw.removeRuleIds)
+        ? raw.removeRuleIds.filter((id): id is string => typeof id === 'string' && validActiveIds.has(id))
+        : [];
 
-      const candidateRule = normalizeStandingRule(raw.standingRule) ?? fallback.standingRule;
+      const clearRuleScope =
+        removeRuleIds.length > 0
+          ? null
+          : (raw.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope)
+              ? raw.clearRuleScope
+              : fallback.clearRuleScope);
+
+      const candidateRule = normalizeStandingRule(raw.standingRule);
       const isEchoOfExistingActiveRule =
         candidateRule &&
         activeRules.some(
@@ -779,6 +803,7 @@ Return strict JSON:
         targetAgents,
         directive,
         standingRule,
+        removeRuleIds,
         clearRuleScope,
       };
     } catch {
@@ -830,13 +855,16 @@ Return strict JSON:
         },
         speakers: [],
         standingRule: null,
+        removeRuleIds: [],
         clearRuleScope: null,
       };
     }
 
     const rulesSummary =
       activeRules.length > 0
-        ? activeRules.map((r) => `- [${r.scope}] ${r.rule}`).join('\n')
+        ? activeRules
+            .map((r) => `- id="${r.id}" [scope=${r.scope}]: ${r.rule}`)
+            .join('\n')
         : '(None)';
 
     const currentTurnAgentMsgs = getCurrentTurnAgentMessages(transcript);
@@ -891,17 +919,17 @@ Rules for routing Wave 0:
    - "light": Simple single-fact check, greeting, or quick 1-sentence note.
    - "standard": Moderate multi-fact answer or domain breakdown (2–4 sentences).
    - "deep": Thorough analysis or complete breakdown.
-4. Standing Rule Extraction & Clearing:
-   - "clearRuleScope": If the user's latest message asks to stop, forget, clear, or override a previous standing rule (e.g. "Stop using haikus...", "Stop starting replies with...", "No more bullet points"), set "clearRuleScope": "global" | "maya" | "liam" | "zoe", else null.
-   - "standingRule": ONLY if the user's latest message establishes a NEW persistent formatting/style/currency instruction for how agents should respond, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": "..." }, otherwise null. NEVER copy or re-emit an existing rule from Active Standing Rules!
+4. Standing Rule Lifecycle ("removeRuleIds" & "standingRule"):
+   - "removeRuleIds": Inspect Active Standing Rules against the user's latest message. If the user asks to stop, drop, forget, relax, or override any specific existing rule(s) (e.g. "nevermind riddles are hard to read, talk normally", "stop using haikus", "Maya, stop ending messages with [BUDGET-OK]", or gives a new rule that contradicts a specific old rule), return the exact "id" strings of ONLY those superseded/canceled rules in "removeRuleIds": ["..."] while leaving unrelated active rules untouched! Otherwise return [].
+   - "standingRule": ONLY if the user's latest message establishes a NEW persistent formatting/style/currency instruction for how agents should respond in future turns, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": "<concise imperative rule ONLY, excluding any follow-up question>" }, otherwise null. (Note: if the user merely says "talk normally" or "answer in 1 normal sentence" to cancel a previous haiku/riddle rule, put the old rule's id in "removeRuleIds" and set "standingRule": null!). NEVER copy or re-emit an existing rule from Active Standing Rules!
 
 Return strict JSON:
 {
   "maya": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
   "liam": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
   "zoe": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
-  "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": string } | null,
-  "clearRuleScope": "global" | "maya" | "liam" | "zoe" | null
+  "removeRuleIds": string[],
+  "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": string } | null
 }`;
 
     const userPrompt = `Active Standing Rules:\n${rulesSummary}\n\nConversation Transcript:\n${formatTranscriptForRouter(transcript, runtimeConfig)}\n\nRoute Wave ${waveIndex} now.`;
@@ -1245,27 +1273,30 @@ Return strict JSON:
       speakers.length = 0;
     }
 
+    const validActiveIds = new Set(activeRules.map((r) => r.id));
+    const removeRuleIds =
+      !isFollowUpWave && Array.isArray(raw?.removeRuleIds)
+        ? raw.removeRuleIds.filter(
+            (id): id is string => typeof id === 'string' && validActiveIds.has(id),
+          )
+        : [];
+
     const mentionedInUserMsg = extractMentionedAgents(referenceText, runtimeConfig);
-    const detClearScope = isFollowUpWave
-      ? null
-      : detectRuleClearScope(referenceText, mentionedInUserMsg, runtimeConfig);
-    const clearRuleScope = isFollowUpWave
-      ? null
-      : detClearScope ??
-        (raw?.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope)
-          ? raw.clearRuleScope
-          : null);
+    const clearRuleScope =
+      isFollowUpWave || removeRuleIds.length > 0
+        ? null
+        : (raw?.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope)
+            ? raw.clearRuleScope
+            : isMock
+              ? detectRuleClearScope(referenceText, mentionedInUserMsg, runtimeConfig)
+              : null);
 
-    const detRule = isFollowUpWave
-      ? null
-      : extractStandingRuleDeterministic(referenceText, mentionedInUserMsg, runtimeConfig);
-
-    // Prefer deterministic sentence-split rule extraction when it matches so compound prompts
-    // ("From now on, everyone answer in 1 short sentence. @Maya and @Liam what is...")
-    // never store the trailing question inside the rule text!
     let candidateStandingRule = isFollowUpWave
       ? null
-      : detRule ?? normalizeStandingRule(raw?.standingRule);
+      : normalizeStandingRule(raw?.standingRule) ??
+        (isMock
+          ? extractStandingRuleDeterministic(referenceText, mentionedInUserMsg, runtimeConfig)
+          : null);
 
     if (candidateStandingRule && !isMock) {
       const matchesExistingActive = activeRules.some(
@@ -1273,20 +1304,8 @@ Return strict JSON:
           r.active === 1 &&
           r.rule.trim().toLowerCase() === candidateStandingRule!.rule.trim().toLowerCase(),
       );
-      const detRule = extractStandingRuleDeterministic(referenceText, mentionedInUserMsg);
       if (matchesExistingActive) {
-        candidateStandingRule = detRule &&
-          detRule.rule.trim().toLowerCase() !== candidateStandingRule.rule.trim().toLowerCase()
-          ? detRule
-          : null;
-      } else if (clearRuleScope) {
-        const hasExplicitPersistentKeyword =
-          /\b(?:always|never|from\s+now\s+on|going\s+forward|every\s+(?:time|reply|response))\b/i.test(
-            referenceText,
-          );
-        if (!hasExplicitPersistentKeyword) {
-          candidateStandingRule = null;
-        }
+        candidateStandingRule = null;
       }
     }
 
@@ -1296,6 +1315,7 @@ Return strict JSON:
       decisions,
       speakers,
       standingRule: candidateStandingRule,
+      removeRuleIds,
       clearRuleScope,
     };
   }

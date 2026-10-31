@@ -353,6 +353,21 @@ export class EmanateStore {
     this.stmtDeactivateRuleById.run(id);
   }
 
+  deactivateRulesByIds(ids: string[]): number {
+    if (!ids || ids.length === 0) return 0;
+    let count = 0;
+    const tx = this.db.transaction(() => {
+      for (const id of ids) {
+        if (typeof id === 'string' && id.trim()) {
+          const res = this.stmtDeactivateRuleById.run(id.trim());
+          count += res.changes;
+        }
+      }
+    });
+    tx();
+    return count;
+  }
+
   clearStandingRules(scope?: ClearRuleScope): number {
     if (!scope || scope === 'all') {
       const res = this.stmtClearAllStandingRules.run();
