@@ -1,4 +1,4 @@
-# Emanate
+# Emanate Case Study
 
 A three-agent group chat. Maya, Liam, and Zoe each have a private knowledge vault. They stream concurrently, follow up with each other when a question needs another agent's facts, and you can redirect any of them **while they are still typing**, in the same message bubble.
 
