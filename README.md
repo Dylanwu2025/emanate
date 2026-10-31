@@ -58,7 +58,19 @@ Node.js `v20+`.
 
 ```bash
 npm install
-cp .env.example .env   # set LLM_API_KEY
+cp .env.example .env
+```
+
+Open `.env` and set `LLM_API_KEY`. Leave the other fields as-is to run OpenAI `gpt-4o-mini`:
+
+```bash
+LLM_PROVIDER="openai"          # openai | anthropic | gemini | openai-compatible
+LLM_MODEL="gpt-4o-mini"
+LLM_API_KEY="sk-..."           # required for a live run
+LLM_BASE_URL=""                # optional: OpenRouter, vLLM, Ollama
+```
+
+```bash
 npm start              # http://localhost:3000
 ```
 
@@ -110,3 +122,26 @@ Default scenario, a 5-day Kyoto & Osaka trip for four friends:
 6. **Stop.** Click **Stop** (or type `stop`) while agents are streaming. Everything freezes at the flushed text.
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for sequence diagrams and the full data model.
+
+## Known gaps and follow-ups
+
+Honest leftovers from this case study — not a product roadmap.
+
+**Orchestration**
+
+- **Three fixed slots.** Scenarios swap roles and vaults, not identities. Ids stay `maya` / `liam` / `zoe`. A fourth speaker, or renaming the trio per scenario, is a code change.
+- **Constraint checker is always Zoe.** Wave 1 still force-schedules `'zoe'` rather than whichever profile is the constraints/compliance agent.
+- **`dependsOn` is model-assigned.** With `gpt-4o-mini`, Wave 0 often stays fully parallel, so an agent guesses a teammate’s number instead of waiting. The Flight B + Ryokan Gion script in [Try these](#try-these) depends on that wait.
+- **Mention aliases are Kyoto-shaped.** “flight person” / “local guide” / “allergy person” still map to Maya / Liam / Zoe, so Nova-launch natural-language targeting is weaker.
+- **Live vs mock paths diverge.** Many router guards are `if (!isMock)`, so the mock suite does not exercise the same follow-up and silence rules a real key hits. Live OpenAI tests exist and are flaky. Anthropic / Gemini / openai-compatible are wired, not the verified path.
+- **No UI for follow-up depth.** `maxA2AWaves` is a server constant (5). There is no control for “one round only.”
+
+**Docs and setup**
+
+- **GitHub cannot play `demo.mp4` inline.** Relative `<video>` tags are stripped; the screenshot links to the file. An in-README player needs a drag-drop upload in GitHub’s markdown editor (`user-attachments` URL on its own line).
+- **`ARCHITECTURE.md` is slightly stale.** Effort `max_tokens` there are 80 / 250 / 600; code and this README use 120 / 320 / 800. The schema section omits the `settings` table (active scenario id).
+- **`.env.example` is incomplete.** `PORT`, `DB_PATH`, and `STREAM_PACE_MS` are read at startup but not listed.
+
+**Out of scope for this demo**
+
+- Auth, multi-user sessions, or a hosted deploy. One Node process, one SQLite file, bound to `localhost`.
