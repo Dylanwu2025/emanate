@@ -63,6 +63,8 @@ export interface BuildAgentPromptOptions {
   thesis?: string;
   peerTheses?: string[];
   priorSpeakerTheses?: Array<{ agentId: AgentId; thesis: string }>;
+  waveIndex?: number;
+  previousWaveSpeakers?: AgentId[];
   isFinalWave?: boolean;
   runtimeConfig?: CustomAgentRuntimeConfig;
   continuation?: {
@@ -254,7 +256,9 @@ export function buildAgentSystemPrompt(
   * If you are ${profile.name} (${profile.roleTitle}), NEVER guess or estimate ${peerDomainSummary} (for example, a budget/pricing specialist must NEVER estimate airport customs or transit durations such as "assuming 1 hour to reach the venue"; a transit/technical guide must NEVER repeat lodging/contract check-in policies or prices without stating their own exact vault durations/metrics first; a group/compliance specialist must NEVER echo venue recommendations or check-in feasibility when no sleep, health, dietary, or compliance rule is triggered).
 - **3. Strict Domain Lane & Never Guess Peers' Private Cutoffs/Timings**: ${profile.domainLaneRule} Do NOT list, summarize, or repeat options or prices from ${peerDomainSummary}—even if they appear in the shared chat history. Do not repeat options or prices from your peers’ domains. If answering the user's question requires a measurement from a peer's domain (like transit duration or latency), state ONLY your domain's fact and ask that peer by "@Name" to provide their measurement!
 - **4. ZERO "I Agree" Echo Bubbles & ZERO Role Disclaimers**: NEVER send a message that merely agrees with another agent (e.g. "I agree with Maya; opting for that option would be the safer choice..."). Only speak when contributing a distinct fact or constraint from your own domain. NEVER start with "I can provide details on ... only", "I'm focused on ..., so...", or "I can't provide ..., but...".
-- **5. Addressing Peers with @Name**: When a decision depends on another agent's domain that hasn't been shared in the chat yet, address that peer directly using "@Maya", "@Liam", or "@Zoe" so they can chime in.`,
+- **5. Natural Peer @Mentions & Handoffs**:
+  * **When Replying in a Follow-Up Wave**: If another agent just spoke before you in this turn, address them directly by \`@Name\` (e.g., "@Maya, ..." or "@Liam, ...") when connecting your constraint, answering their question, or building on their option!
+  * **When Presenting Options in Wave 0**: If you present an option, schedule, or cutoff where a peer's domain is needed to verify feasibility (e.g., transit timing or group/compliance constraints), briefly tag that peer by \`@Name\` at the end of your point (e.g., "— @Zoe, how does that timing fit our group rules?" or "— @Liam, how long is the transit?"), unless this is the final wrap-up wave.`,
   ];
 
   if (applicableRules.length > 0) {
@@ -292,6 +296,17 @@ ${peerThesisLines.join('\n')}
 
   if (opts.effort) {
     sections.push(`## Response Length & Effort Calibration (${opts.effort})\n${EFFORT_INSTRUCTIONS[opts.effort]}`);
+  }
+
+  if (opts.waveIndex && opts.waveIndex >= 1 && opts.previousWaveSpeakers && opts.previousWaveSpeakers.length > 0) {
+    const prevNames = opts.previousWaveSpeakers
+      .filter((id) => id !== agentId)
+      .map((id) => `@${getAgentProfile(id, opts.runtimeConfig).name}`);
+    if (prevNames.length > 0) {
+      sections.push(
+        `## Follow-Up Wave Peer Connection (Wave ${opts.waveIndex})\nYou are replying directly after ${prevNames.join(' and ')}. Start or anchor your response by addressing ${prevNames[0]} by name (e.g. "${prevNames[0]}, ...") as you connect your private domain facts/constraints to what they just shared, and do not ask open-ended follow-up questions back once the constraint is resolved.`,
+      );
+    }
   }
 
   if (opts.isFinalWave) {

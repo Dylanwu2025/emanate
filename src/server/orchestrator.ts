@@ -860,6 +860,7 @@ export class GroupChatOrchestrator extends EventEmitter {
           waveIndex,
           plan.speakers,
           isFinalWave,
+          previousWaveSpeakers,
           turnSignal,
         );
         agentMessages.push(...completedInWave);
@@ -889,6 +890,7 @@ export class GroupChatOrchestrator extends EventEmitter {
     waveIndex: number,
     speakers: SpeakerPlan[],
     isFinalWave: boolean,
+    previousWaveSpeakers: AgentId[],
     turnSignal: AbortSignal,
   ): Promise<PublicWireMessage[]> {
     const reservedSlots: Array<{
@@ -943,6 +945,7 @@ export class GroupChatOrchestrator extends EventEmitter {
         preWaveTranscript,
         reservedIds,
         isFinalWave,
+        previousWaveSpeakers,
         turnSignal,
       }),
     );
@@ -964,6 +967,7 @@ export class GroupChatOrchestrator extends EventEmitter {
     preWaveTranscript: MessageRow[];
     reservedIds: Set<string>;
     isFinalWave: boolean;
+    previousWaveSpeakers?: AgentId[];
     turnSignal: AbortSignal;
   }): Promise<PublicWireMessage> {
     const {
@@ -973,6 +977,7 @@ export class GroupChatOrchestrator extends EventEmitter {
       preWaveTranscript,
       reservedIds,
       isFinalWave,
+      previousWaveSpeakers,
       turnSignal,
     } = params;
     const { agentId, effort, maxTokens, thesis, peerTheses, priorSpeakerTheses } = speaker;
@@ -990,6 +995,8 @@ export class GroupChatOrchestrator extends EventEmitter {
           thesis,
           peerTheses,
           priorSpeakerTheses,
+          waveIndex: streamState.waveIndex,
+          previousWaveSpeakers,
           isFinalWave,
           runtimeConfig: this.runtimeConfig,
           ...(currentContinuation
