@@ -415,18 +415,31 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
     it('enforces the MAX_A2A_WAVES = 3 safety ceiling and marks the final wave with isFinalWave', async () => {
       const orchestrator = new GroupChatOrchestrator({ store, llm: mockLLM });
 
-      // Queue 4 waves (Wave 0 + 3 follow-up waves) where isResolved stays false
+      // Queue 4 waves (Wave 0 + 3 follow-up waves) where Maya and Liam alternate back-and-forth
+      // with distinct cross-agent points while isResolved stays false
+      const distinctWaveTheses = [
+        { maya: 'Propose Flight B ($820) landing at 3:45 PM', liam: '' },
+        { maya: '', liam: 'Note KIX customs and transit to Gion takes 2 hours 15 minutes' },
+        { maya: 'Pivot lodging to Hotel Granvia ($290/night, 24h check-in)', liam: '' },
+        { maya: '', liam: 'Confirm Haruka Express arrives directly inside Kyoto Station' },
+      ];
+
       for (let w = 0; w <= MAX_A2A_WAVES; w++) {
+        const step = distinctWaveTheses[w];
         mockLLM.enqueueJSON({
           response: {
             isResolved: false,
-            maya: { effort: 'light', thesis: `Wave ${w} point` },
-            liam: { effort: 'silent', thesis: '' },
+            maya: step.maya
+              ? { effort: 'light', thesis: step.maya }
+              : { effort: 'silent', thesis: '' },
+            liam: step.liam
+              ? { effort: 'light', thesis: step.liam }
+              : { effort: 'silent', thesis: '' },
             zoe: { effort: 'silent', thesis: '' },
           },
         });
         mockLLM.enqueueStream({
-          chunks: [`Maya response in wave ${w}.`],
+          chunks: [`Agent response in wave ${w}: ${step.maya || step.liam}.`],
           delayMs: 1,
         });
       }
@@ -442,6 +455,77 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
         mockLLM.streamCalls[MAX_A2A_WAVES].messages[0].content;
       expect(finalWaveSystemPrompt).toContain('## Final Synthesis Wave');
       expect(finalWaveSystemPrompt).toContain('do not ask further open questions');
+    });
+
+    it('prevents consecutive self-replies and self-repetition when an agent was the sole speaker in the previous wave', async () => {
+      const orchestrator = new GroupChatOrchestrator({ store, llm: mockLLM });
+
+      // Wave 0: Only Maya speaks and asks the user which flight they prefer
+      mockLLM.enqueueJSON({
+        response: {
+          maya: {
+            effort: 'standard',
+            thesis: 'Present Flight A (6:45 AM, $650) and Flight B (11:30 AM, $820) options',
+          },
+          liam: { effort: 'silent', thesis: '' },
+          zoe: { effort: 'silent', thesis: '' },
+        },
+      });
+
+      mockLLM.enqueueStream({
+        match: /You are Maya/,
+        chunks: [
+          'We have two flight options into KIX: Flight A (6:45 AM, $650) and Flight B (11:30 AM, $820). Please let me know which flight you prefer so we can finalize the travel plans!',
+        ],
+      });
+
+      // Wave 1: Even if the LLM router mistakenly tries to make Maya speak again to "confirm preferred flight"
+      // while Zoe chimes in about the 7:30 AM rule, the router MUST silence Maya's consecutive self-reply!
+      mockLLM.enqueueJSON({
+        response: {
+          isResolved: false,
+          maya: {
+            effort: 'light',
+            thesis: 'We need to confirm the preferred flight option to finalize travel plans.',
+          },
+          liam: { effort: 'silent', thesis: '' },
+          zoe: {
+            effort: 'standard',
+            thesis: 'Veto 6:45 AM Flight A due to the group rule against waking before 7:30 AM',
+          },
+        },
+      });
+
+      mockLLM.enqueueStream({
+        match: /You are Zoe/,
+        chunks: [
+          'We need to avoid Flight A (6:45 AM) since our group rule forbids waking before 7:30 AM—let us go with Flight B!',
+        ],
+      });
+
+      // Wave 2: Even if the router tries to have Zoe repeat herself or Maya repeat her flight prompt, both are silenced and the turn resolves!
+      mockLLM.enqueueJSON({
+        response: {
+          isResolved: false,
+          maya: {
+            effort: 'light',
+            thesis: 'Confirm the preferred flight option between Flight A and Flight B',
+          },
+          liam: { effort: 'silent', thesis: '' },
+          zoe: {
+            effort: 'light',
+            thesis: 'Avoid Flight A because of the 7:30 AM wakeup rule',
+          },
+        },
+      });
+
+      const res = await orchestrator.handleUserMessage(
+        "What's our travel plans so far, when are our flights?",
+      );
+
+      // Maya spoke ONCE in Wave 0, Zoe spoke ONCE in Wave 1, and Wave 2 auto-resolved with 0 speakers
+      expect(res.agentMessages).toHaveLength(2);
+      expect(res.agentMessages.map((m) => m.agentId)).toEqual(['maya', 'zoe']);
     });
   });
 
@@ -503,8 +587,22 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
         const seqs = reloaded.map((m) => m.seq);
         expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
         expect(sseEvents.at(-1)?.type).toBe('turn.idle');
+
+        // Regression check for user-reported prompt: "What's our travel plans so far, when are our flights?"
+        // Verify Maya NEVER speaks twice in a row or repeats herself across waves!
+        store.reset();
+        const flightCheckRes = await orchestrator.handleUserMessage(
+          "What's our travel plans so far, when are our flights?",
+        );
+        const speakerSequence = flightCheckRes.agentMessages.map((m) => m.agentId);
+        expect(speakerSequence).toContain('maya');
+        for (let i = 1; i < speakerSequence.length; i++) {
+          expect(speakerSequence[i]).not.toBe(speakerSequence[i - 1]);
+        }
+        const mayaCount = speakerSequence.filter((id) => id === 'maya').length;
+        expect(mayaCount).toBe(1);
       },
-      45000,
+      60000,
     );
   });
 });

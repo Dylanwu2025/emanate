@@ -50,6 +50,8 @@ export interface RouteWaveInput {
   transcript: MessageRow[];
   activeRules?: StandingRuleRow[];
   latestUserMessage?: string;
+  previousWaveSpeakers?: AgentId[];
+  turnThesesByAgent?: Partial<Record<AgentId, string[]>>;
   signal?: AbortSignal;
 }
 
@@ -89,6 +91,8 @@ const THESIS_STOPWORDS = new Set([
   'would', 'should', 'could', 'can', 'may', 'might', 'flight', 'flights', 'hotel',
   'kyoto', 'osaka', 'trip', 'group', 'share', 'explain', 'state', 'provide',
   'discuss', 'mention', 'note', 'cover', 'answer', 'question', 'details', 'info',
+  'option', 'options', 'confirm', 'choose', 'prefer', 'preferred', 'finalize',
+  'travel', 'plans', 'plan', 'between', 'recommend', 'stay',
 ]);
 
 function normalizeThesisTokens(thesis: string): Set<string> {
@@ -111,6 +115,9 @@ export function areThesesRedundant(earlierThesis: string, laterThesis: string): 
 
   const earlierTokens = normalizeThesisTokens(normEarlier);
   const laterTokens = normalizeThesisTokens(normLater);
+  if (earlierTokens.size === 0 && laterTokens.size === 0) {
+    return true;
+  }
   if (earlierTokens.size === 0 || laterTokens.size === 0) {
     return false;
   }
@@ -125,6 +132,59 @@ export function areThesesRedundant(earlierThesis: string, laterThesis: string): 
   const ratioLater = overlap / laterTokens.size;
   const ratioEarlier = overlap / earlierTokens.size;
   return overlap >= 3 && (ratioLater >= 0.75 || ratioEarlier >= 0.75);
+}
+
+/**
+ * Checks if an agent's proposed thesis in a follow-up wave repeats what that same agent
+ * already covered earlier in the current turn (either by thesis or by message content).
+ */
+export function isSelfRepetitiveForAgent(
+  proposedThesis: string,
+  priorThesesForAgent: string[],
+  priorMessagesForAgent: string[],
+): boolean {
+  const trimmed = proposedThesis.trim();
+  if (!trimmed) return true;
+
+  // Reject meta-prompts where an agent merely asks the user to confirm/choose an option it just presented
+  if (
+    /^(?:ask|prompt|remind|request|wait\s+for)\s+(?:the\s+)?(?:user|group|everyone)\s+to\s+(?:choose|confirm|select|decide|pick|let\s+us\s+know)/i.test(
+      trimmed,
+    ) ||
+    /\b(?:confirm\s+(?:the\s+)?preferred\s+flight|choose\s+between\s+flight\s+a\s+(?:and|or)\s+flight\s+b|finalize\s+travel\s+plans)\b/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+
+  for (const oldThesis of priorThesesForAgent) {
+    if (areThesesRedundant(oldThesis, trimmed)) {
+      return true;
+    }
+  }
+
+  const proposedTokens = normalizeThesisTokens(trimmed);
+  for (const oldMsg of priorMessagesForAgent) {
+    if (areThesesRedundant(oldMsg, trimmed)) {
+      return true;
+    }
+    if (proposedTokens.size > 0) {
+      const msgTokens = normalizeThesisTokens(oldMsg);
+      let coveredCount = 0;
+      for (const tok of proposedTokens) {
+        if (msgTokens.has(tok)) {
+          coveredCount++;
+        }
+      }
+      // If >=80% of the proposed thesis tokens were already stated in this agent's earlier message in the turn
+      if (coveredCount / proposedTokens.size >= 0.8) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 const ROLE_ALIAS_PATTERNS: Array<{ agentId: AgentId; pattern: RegExp }> = [
@@ -235,7 +295,6 @@ export function extractStandingRuleDeterministic(
   }
 
   const scope: RuleScope = mentionedAgents.length === 1 ? mentionedAgents[0] : 'global';
-  // Strip leading "@Agent," or "Agent," prefix for a clean rule statement
   const cleanedRule = trimmed
     .replace(/^(?:@?(?:maya|liam|zoe)\s*[,:—-]\s*)+/i, '')
     .trim();
@@ -387,6 +446,19 @@ function formatTranscriptForRouter(transcript: MessageRow[]): string {
     .join('\n');
 }
 
+function getCurrentTurnAgentMessages(transcript: MessageRow[]): MessageRow[] {
+  let lastUserIdx = -1;
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    if (transcript[i].role === 'user') {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  return lastUserIdx >= 0
+    ? transcript.slice(lastUserIdx + 1).filter((m) => m.role === 'agent' && Boolean(m.agent_id))
+    : transcript.filter((m) => m.role === 'agent' && Boolean(m.agent_id));
+}
+
 export class TurnRouter {
   constructor(private readonly llm: LLMProvider) {}
 
@@ -394,7 +466,6 @@ export class TurnRouter {
     const { userMessage, activeAgents, activeRules = [], signal } = input;
     const trimmed = userMessage.trim();
 
-    // Fast <1ms deterministic shortcut for explicit stop commands
     if (isExplicitStopCommand(trimmed)) {
       return {
         action: 'stop_all',
@@ -473,7 +544,6 @@ Return strict JSON:
       let targetAgents: AgentId[] = [];
 
       if (explicitlyMentioned.length > 0) {
-        // Explicit name/role mentions in the user message take strict precedence for selective abort
         targetAgents = explicitlyMentioned;
       } else if (Array.isArray(raw.targetAgents)) {
         targetAgents = raw.targetAgents.filter((id): id is AgentId =>
@@ -516,7 +586,15 @@ Return strict JSON:
   }
 
   async routeWave(input: RouteWaveInput): Promise<WaveRoutingPlan> {
-    const { waveIndex, transcript, activeRules = [], latestUserMessage, signal } = input;
+    const {
+      waveIndex,
+      transcript,
+      activeRules = [],
+      latestUserMessage,
+      previousWaveSpeakers,
+      turnThesesByAgent = {},
+      signal,
+    } = input;
     const isFollowUpWave = waveIndex > 0;
 
     const rulesSummary =
@@ -524,16 +602,28 @@ Return strict JSON:
         ? activeRules.map((r) => `- [${r.scope}] ${r.rule}`).join('\n')
         : '(None)';
 
+    const currentTurnAgentMsgs = getCurrentTurnAgentMessages(transcript);
+    const inferredPrevSpeakers: AgentId[] =
+      previousWaveSpeakers ??
+      (currentTurnAgentMsgs.length > 0 && currentTurnAgentMsgs[currentTurnAgentMsgs.length - 1].agent_id
+        ? [currentTurnAgentMsgs[currentTurnAgentMsgs.length - 1].agent_id!]
+        : []);
+
     const systemPrompt = isFollowUpWave
       ? `You are the A2A Follow-Up Wave Router for a 3-agent Kyoto & Osaka trip planning group chat:
 - maya (Maya — Budget, Flights & Lodging: knows the $4,800 budget, Flight A 6:45 AM $650 vs Flight B 11:30 AM $820, Ryokan Gion $380/night with strict 6:00 PM check-in cutoff vs Hotel Granvia $290/night 24h check-in, Cross Hotel Osaka $260/night).
 - liam (Liam — Local Guide for Food, Sights & Transit: knows KIX to Gion takes 2h 15m, KIX to Kyoto Station takes 1h 35m, Nishiki Market 11 AM–2 PM has heavy shared-grill shellfish, Arashiyama Tofu Kaiseki is 100% vegetarian & shellfish-free until 7:30 PM, sight crowd windows).
-- zoe (Zoe — Group Dynamics, Dietary & Pacing: knows Sam has a severe shellfish allergy and boat/bus motion sickness, Priya is strict vegetarian, and the group has a strict rule against waking before 7:30 AM which rules out 6:45 AM flights).
+- zoe (Zoe — Group Dynamics, Dietary & Pacing: knows Sam has a severe shellfish allergy and boat/bus motion sickness, Priya is strict vegetarian, and the group has a strict rule against waking before 7:30 AM which rules out 6:45 AM Flight A).
 
-Analyze the latest wave of agent responses in the transcript:
-1. Determine if an agent asked a peer a question (e.g., "@Liam...") OR revealed a constraint/option that requires another agent's private vault facts to verify or resolve (e.g., Flight B landing at 3:45 PM + 2h 15m transit = 6:00 PM sharp cutoff risk, or proposing Flight A 6:45 AM which violates Zoe's 7:30 AM wakeup rule, or Nishiki Market conflicting with Sam's shellfish allergy).
-2. If the exchange has already synthesized the needed facts and answered the user's question without unresolved peer questions or unflagged constraints, set "isResolved": true and set all agents to "silent".
-3. Otherwise set "isResolved": false and assign ONLY the specific agent(s) who have new private facts or answers to contribute an effort level ("light" | "standard" | "deep") and a distinct 1-line "thesis". Agents with nothing new to add MUST be "silent".
+Agents who just spoke in Wave ${waveIndex - 1}: ${JSON.stringify(inferredPrevSpeakers)}
+
+CRITICAL RULES FOR A2A FOLLOW-UP WAVES:
+1. NEVER allow an agent to reply to itself or repeat its own recommendation or call-to-action! If only one agent spoke in Wave ${waveIndex - 1} (e.g. ${JSON.stringify(inferredPrevSpeakers)}), that agent MUST be "silent" in Wave ${waveIndex}.
+2. Questions directed to the USER (e.g. "Please let me know which flight you prefer!", "What do you all think?" when no peer has conflicting/missing private facts) are NOT triggers for the same agent to speak again. Wait for the user by setting "isResolved": true and all agents to "silent".
+3. An agent may ONLY speak in Wave ${waveIndex} if a DIFFERENT agent in Wave ${waveIndex - 1}:
+   (a) directly asked them a question (e.g. "@Liam how long is transit?"), OR
+   (b) mentioned a specific option/fact that triggers a constraint in THIS agent's private vault that has NOT been stated yet in the current turn (for example: if Maya mentioned Flight A departing at 6:45 AM and Zoe hasn't vetoed it yet based on the group's no-waking-before-7:30-AM rule, Zoe MUST speak now; or if Liam revealed 2h 15m transit makes Ryokan Gion's 6:00 PM cutoff too tight, Maya can pivot to Hotel Granvia).
+4. Once all cross-agent constraints for the user's question have been surfaced, set "isResolved": true and all agents to "silent".
 
 Return strict JSON:
 {
@@ -545,16 +635,20 @@ Return strict JSON:
       : `You are the Pre-Response Effort & Non-Repetition Router for a 3-agent Kyoto & Osaka trip planning group chat:
 - maya (Maya — Budget, Flights & Lodging: private vault has group budget $4,800, Flight A 6:45 AM $650 vs Flight B 11:30 AM $820, Ryokan Gion $380/night strict 6:00 PM cutoff vs Hotel Granvia $290/night 24h check-in, Cross Hotel Osaka $260/night).
 - liam (Liam — Local Guide for Food, Sights & Transit: private vault has KIX to Gion 2h 15m transit time, KIX to Kyoto Station 1h 35m, Nishiki Market 11 AM–2 PM shared-grill shellfish, Arashiyama Tofu Kaiseki vegetarian/shellfish-free until 7:30 PM, crowd windows).
-- zoe (Zoe — Group Dynamics, Dietary & Pacing: private vault has Sam's severe shellfish allergy & bus/boat motion sickness, Priya's strict vegetarianism, and the group's no-waking-before-7:30-AM rule).
+- zoe (Zoe — Group Dynamics, Dietary & Pacing: private vault has Sam's severe shellfish allergy & bus/boat motion sickness, Priya's strict vegetarianism, and the group's no-waking-before-7:30-AM rule which rules out 6:45 AM Flight A).
 
 Rules for routing Wave 0:
 1. Silence Gate: If an agent's domain is not relevant to the user's message, set their effort to "silent" and thesis to "".
-2. Effort Calibration:
+2. Cross-Domain Awareness:
+   - When the user asks about flights or travel plans, Maya should cover the flight options/prices AND Zoe should also speak (or follow up) if 6:45 AM Flight A is on the table, since Zoe's vault has the group's no-waking-before-7:30-AM rule.
+   - When the user asks about food/dining (like Nishiki Market), both Liam (food/hours) and Zoe (Sam's shellfish allergy & Priya's vegetarian diet) are relevant.
+   - When the user asks a narrow single-agent question (e.g. "@Maya what is the total budget?"), only that agent speaks.
+3. Effort Calibration:
    - "light": Simple factual check or quick confirmation (1 short sentence).
    - "standard": Moderate multi-fact answer (2–4 sentences).
    - "deep": Complex trade-off or full itinerary/budget breakdown.
-3. Distinct Theses: Each speaking agent MUST have a distinct 1-line "thesis" focused strictly on their own private domain so agents never repeat each other.
-4. Standing Rule Extraction: If the user message establishes a persistent instruction for how agents should respond (e.g. "Always answer in bullet points", "Maya, quote all prices in JPY from now on"), return it in "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": "..." }, otherwise null.
+4. Distinct Theses: Each speaking agent MUST have a distinct 1-line "thesis" focused strictly on their own private domain so agents never repeat each other.
+5. Standing Rule Extraction: If the user message establishes a persistent instruction for how agents should respond (e.g. "Always answer in bullet points", "Maya, quote all prices in JPY from now on"), return it in "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": "..." }, otherwise null.
 
 Return strict JSON:
 {
@@ -582,6 +676,38 @@ Return strict JSON:
       zoe: normalizeAgentDecision(raw.zoe ?? raw.agents?.zoe),
     };
 
+    // Enforce hard A2A guards on follow-up waves (Wave >= 1):
+    // 1. No consecutive self-reply: if an agent was the ONLY speaker in Wave N-1,
+    //    no peer has spoken since their last message, so they MUST NOT speak again in Wave N!
+    // 2. Self-deduplication: if an agent already spoke in this turn and their proposed thesis
+    //    repeats their earlier thesis/message (or is just "confirm preferred flight"), silence them.
+    if (isFollowUpWave) {
+      if (inferredPrevSpeakers.length === 1) {
+        const solePrevSpeaker = inferredPrevSpeakers[0];
+        rawDecisions[solePrevSpeaker] = { effort: 'silent', thesis: '' };
+      }
+
+      for (const agentId of AGENT_IDS) {
+        if (rawDecisions[agentId].effort === 'silent') continue;
+
+        const priorMsgsForAgent = currentTurnAgentMsgs
+          .filter((m) => m.agent_id === agentId)
+          .map((m) => m.content);
+        const priorThesesForAgent = turnThesesByAgent[agentId] ?? [];
+
+        if (
+          (priorMsgsForAgent.length > 0 || priorThesesForAgent.length > 0) &&
+          isSelfRepetitiveForAgent(
+            rawDecisions[agentId].thesis,
+            priorThesesForAgent,
+            priorMsgsForAgent,
+          )
+        ) {
+          rawDecisions[agentId] = { effort: 'silent', thesis: '' };
+        }
+      }
+    }
+
     const referenceText =
       latestUserMessage ??
       (transcript.length > 0 ? transcript[transcript.length - 1].content : '');
@@ -593,7 +719,7 @@ Return strict JSON:
       ? Boolean(raw.isResolved) || speakers.length === 0
       : speakers.length === 0;
 
-    if (isFollowUpWave && raw.isResolved) {
+    if (isFollowUpWave && isResolved) {
       for (const id of AGENT_IDS) {
         decisions[id] = { effort: 'silent', thesis: '' };
       }

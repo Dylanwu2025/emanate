@@ -682,6 +682,12 @@ export class GroupChatOrchestrator extends EventEmitter {
 
     const wavePlans: WaveRoutingPlan[] = [];
     const agentMessages: PublicWireMessage[] = [];
+    let previousWaveSpeakers: AgentId[] = [];
+    const turnThesesByAgent: Partial<Record<AgentId, string[]>> = {
+      maya: [],
+      liam: [],
+      zoe: [],
+    };
 
     try {
       for (let waveIndex = 0; waveIndex <= this.maxA2AWaves; waveIndex++) {
@@ -698,6 +704,8 @@ export class GroupChatOrchestrator extends EventEmitter {
             waveIndex === 0
               ? trimmedUserText
               : transcriptSnapshot[transcriptSnapshot.length - 1]?.content,
+          previousWaveSpeakers,
+          turnThesesByAgent,
           signal: turnSignal,
         });
         wavePlans.push(plan);
@@ -718,6 +726,13 @@ export class GroupChatOrchestrator extends EventEmitter {
           break;
         }
 
+        for (const sp of plan.speakers) {
+          turnThesesByAgent[sp.agentId] = [
+            ...(turnThesesByAgent[sp.agentId] ?? []),
+            sp.thesis,
+          ];
+        }
+
         const isFinalWave = waveIndex === this.maxA2AWaves;
         const completedInWave = await this.executeWave(
           waveIndex,
@@ -726,6 +741,9 @@ export class GroupChatOrchestrator extends EventEmitter {
           turnSignal,
         );
         agentMessages.push(...completedInWave);
+        previousWaveSpeakers = completedInWave
+          .map((m) => m.agentId)
+          .filter((id): id is AgentId => Boolean(id));
 
         if (turnSignal.aborted || this.steeredInCurrentTurn) {
           break;
