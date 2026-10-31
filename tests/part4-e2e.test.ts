@@ -193,7 +193,7 @@ describe('Part 4: Group Chat Web UI, Documentation & End-to-End Verification', (
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
-          !opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          !opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: ['Flight A is $650 ', 'and Flight B is $820 ', 'in USD...'],
         delayMs: 35,
       });
@@ -213,7 +213,7 @@ describe('Part 4: Group Chat Web UI, Documentation & End-to-End Verification', (
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
-          opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: ['Flight A is ¥97,500 ', 'and Flight B is ¥123,000 in JPY.'],
         delayMs: 10,
       });

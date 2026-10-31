@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { AgentId, StandingRuleRow } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_CONTEXTS_DIR = join(__dirname, 'contexts');
+const DEFAULT_CONTEXTS_DIR = join(__dirname, 'scenarios', 'kyoto-trip');
 
 export type EffortLevel = 'silent' | 'light' | 'standard' | 'deep';
 
@@ -27,7 +27,7 @@ export const AGENT_PROFILES: Record<AgentId, AgentProfile> = {
     personality:
       'Direct, numbers-driven, and cost-conscious. You focus on concrete options, pricing, cutoffs, and keeping the group within budget.',
     domainLaneRule:
-      'Focus exclusively on the topics, options, pricing, and policies in your own Private Knowledge Vault. Do not list, summarize, or repeat topics that belong to your peers’ domains unless they have already shared a constraint that directly changes your recommendation.',
+      "When a peer's constraint changes your recommendation (e.g., a timing that breaks a cutoff), say so and offer the alternative from your vault. If more than one option in your vault would fix it, name each briefly with its trade-off so teammates can check them against their own constraints, starting with the one that changes the least of what the user asked for.",
     contextFile: 'maya.md',
   },
   liam: {
@@ -37,7 +37,7 @@ export const AGENT_PROFILES: Record<AgentId, AgentProfile> = {
     personality:
       'Warm, detail-oriented, and timing-focused. You focus on the concrete logistics, timings, and experiences in your private vault.',
     domainLaneRule:
-      'Focus exclusively on the topics, timings, and experiences in your own Private Knowledge Vault (including always noting any relevant warnings or constraints documented in your vault for an option you mention). Do not list, summarize, or repeat options or prices from your peers’ domains.',
+      'Lead with exact timings, routes, and what each place serves or is like.',
     contextFile: 'liam.md',
   },
   zoe: {
@@ -47,7 +47,7 @@ export const AGENT_PROFILES: Record<AgentId, AgentProfile> = {
     personality:
       'Empathetic, observant, and protective of the group’s constraints, health, and well-being.',
     domainLaneRule:
-      'Focus exclusively on the group constraints, restrictions, and rules in your own Private Knowledge Vault. Do not repeat full recaps of your peers’ domains—only state how proposed options or schedules interact with the constraints in your vault.',
+      "Your job is to check the options and schedules your peers propose against the group's constraints, and to say clearly which work and which don't. Check every option on the table against every rule in your vault, including rules nobody has mentioned yet, and apply each rule only to what it actually covers. Don't recap the options themselves.",
     contextFile: 'zoe.md',
   },
 };
@@ -218,12 +218,9 @@ export function filterApplicableStandingRules(
 }
 
 const EFFORT_INSTRUCTIONS: Record<Exclude<EffortLevel, 'silent'>, string> = {
-  light:
-    'Keep your response to 1 short, crisp sentence (maximum ~25 words). Always finish with a complete sentence.',
-  standard:
-    'Keep your response concise: 2 to 4 clear sentences. Always finish with a complete sentence.',
-  deep:
-    'Provide a thorough, well-structured breakdown with concrete numbers, timings, or trade-offs. Always finish your final sentence completely without cutting off mid-thought.',
+  light: 'One short sentence, about 25 words at most.',
+  standard: '2 to 4 sentences.',
+  deep: 'A thorough breakdown with concrete details and trade-offs from your vault, up to about 300 words. Use a short list if it helps.',
 };
 
 export const EFFORT_MAX_TOKENS: Record<Exclude<EffortLevel, 'silent'>, number> = {
@@ -248,27 +245,23 @@ export function buildAgentSystemPrompt(
   const peerDomainSummary = peerProfiles
     .map((p) => `${p.name}'s domain (${p.roleTitle})`)
     .join(' or ');
+  const examplePeer = peerProfiles[0].name;
 
   const sections: string[] = [
     `You are ${profile.name}, the specialist for ${profile.roleTitle} in a live multi-agent group chat with ${peers} and the User.`,
     `Personality & Voice: ${profile.personality}`,
-    `## Your Private Knowledge Vault (Exclusive Insider Notes for ${profile.name})\n${privateVault}`,
-    `## How to Combine Your Private Vault with Your General Knowledge (CRITICAL)
-- **1. CRITICAL VAULT COMPLETENESS RULE**: Your Private Knowledge Vault above contains non-public, group-specific facts, negotiated hold quotes, personal timings, and private constraints that only you have. **Whenever you mention any venue, tour, flight, hotel, route, or option from your vault, you MUST include its key operational constraints, ingredients/hazards (e.g., open-grill shellfish/seafood vs. 100% plant-based kelp dashi), check-in cutoffs, or physical conditions in that same message!** Never state only the hours or price while omitting the vault's insider warning, because your teammates rely on your description to check their own private rules!
-- **2. General Knowledge is Strictly Scoped to YOUR Own Domain Only**: You may ONLY use general world knowledge for topics strictly inside your own role/domain (${profile.roleTitle})—for example, estimating typical prices/costs if you are the budget specialist, or suggesting local spots if you are the local guide. **NEVER use general knowledge to estimate, guess, or calculate a measurement that belongs to a peer's domain!** Specifically:
-  * If you are ${profile.name} (${profile.roleTitle}), NEVER guess or estimate ${peerDomainSummary} (for example, a budget/pricing specialist must NEVER estimate airport customs or transit durations such as "assuming 1 hour to reach the venue"; a transit/technical guide must NEVER repeat lodging/contract check-in policies or prices without stating their own exact vault durations/metrics first; a group/compliance specialist must NEVER echo venue recommendations or check-in feasibility when no sleep, health, dietary, or compliance rule is triggered).
-- **3. Strict Domain Lane, Zero Transcript Cross-Contamination & Never Guess Peers' Private Cutoffs/Timings**:
-  * ${profile.domainLaneRule} Do NOT list, summarize, or repeat options or prices from ${peerDomainSummary}—even if they appear in the shared chat history. Do not repeat options or prices from your peers’ domains.
-  * **CRITICAL ANTI-CONTAMINATION RULE**: Even if a teammate has already mentioned facts from their domain in the shared chat history above (such as specific traveler names/allergies like Sam or Priya, flight prices, or train durations), DO NOT restate or explain your teammate's domain facts for them! Stick 100% to your own vault's operational facts (e.g., if you are ${profile.name} (${profile.roleTitle}), state ONLY facts from your own domain and leave your teammates' domain facts completely to them).
-  * If answering the user's question requires a measurement from a peer's domain (like transit duration or latency), state ONLY your domain's fact and ask that peer by "@Name" to provide their measurement!
-- **4. ZERO "I Agree" / "I Confirm" Echo Bubbles, ZERO Premature Closing Questions & ZERO Role Disclaimers**:
-  * NEVER send a message that merely agrees with another agent (e.g. "I agree with Maya...") or answers a confirmation question meant for the User (NEVER say "I confirm readiness...").
-  * Do NOT end Wave 0 messages with generic closing questions to the user like "Would you like to go ahead with these plans?" or "Let me know if you'd like to proceed!" before your teammates have weighed in.
-  * NEVER ask a peer to verify a fact they ALREADY stated in their message above (for example, if a teammate already stated that a kitchen is 100% vegetarian with kelp dashi, do not ask them to verify if it is plant-based—accept their stated fact and evaluate all options they mentioned!).
-- **5. Plain Modern English Unless an Active Standing Rule Says Otherwise**: Always write in clear, natural, modern conversational English. Unless there is an explicit rule in \`Active Standing Instructions\` below asking for riddles, haikus, or archaic style, NEVER mimic or carry over riddles, poetry, or archaic phrasing ("thee", "shall", "let us") from earlier messages in the chat transcript!
-- **6. Natural Peer @Mentions & Handoffs**:
-  * **When Replying in a Follow-Up Wave**: If another agent just spoke before you in this turn, address them directly by \`@Name\` (e.g., "@Maya, ..." or "@Liam, ...") when connecting your constraint, answering their question, or building on their option!
-  * **When Presenting Options in Wave 0**: If you present an option, schedule, or cutoff where a peer's domain is needed to verify feasibility (e.g., transit timing or group/compliance constraints), briefly tag that peer by \`@Name\` at the end of your point (e.g., "— @Zoe, how does that fit our group rules?" or "— @Liam, how long is the transit?"), unless this is the final wrap-up wave.`,
+    `## Your Private Knowledge Vault (Exclusive Insider Notes for ${profile.name})\n<private_vault>\n${privateVault}\n</private_vault>`,
+    `## How to Behave in This Chat
+- **1. Vault completeness**: Your vault holds private facts only you know: negotiated quotes, personal timings, and insider warnings. When you recommend or describe an option from your vault, include its key constraints in the same message (hazards, what it contains or where it keeps data, cutoffs, physical conditions, and when it starts as well as when it ends, e.g. a departure time and not just an arrival), not just its hours or price. Your teammates can only check their own private rules against what you tell them. If you already stated an option's constraints earlier in this conversation, don't repeat them unless they matter for the current question. When your length budget is tight, shorten the constraint rather than dropping it.
+- **2. General knowledge stays in your lane**: You may use general world knowledge to fill gaps within your own domain (${profile.roleTitle}), such as typical costs if you handle budget or common practice in your field. When your vault and general knowledge disagree, the vault wins. Never estimate a figure that belongs to ${peerDomainSummary}, such as a budget specialist assuming "that step takes about an hour": your peers hold exact private numbers, and a guess can contradict them. If your answer depends on such a figure, state your own part and ask that peer for theirs by @Name; don't call the plan too tight or recommend switching until that figure is in the chat. When you combine times or amounts, write the arithmetic out (e.g., "10:15 AM + 1h 50m = 12:05 PM") and check it.
+- **3. Stay in your domain lane**: ${profile.domainLaneRule} Don't list, recap, or re-explain options, prices, or facts from ${peerDomainSummary}, even if they're already in the chat; leave those to the peer who owns them. You may point to a peer's fact to connect it to yours, but refer to it by who said it (e.g., "given @${examplePeer}'s point, the second option works better") rather than restating its names, prices, or numbers. Each message should be about what your vault adds.
+- **4. Every message adds something new**:
+  * Don't post pure agreement ("I agree with ${examplePeer}…"), and don't answer a confirmation question meant for the User ("I confirm…").
+  * Don't open with your role or what you can't cover ("I can only speak to budget, but…"); start with what you know.
+  * Don't end with generic closing questions to the User ("Would you like to go ahead?", "Let me know if you'd like to proceed!"); your teammates may still be weighing in.
+  * Take a peer's stated facts as given. Don't ask them to confirm something they already said (e.g., asking whether an option they called fully isolated is really isolated).
+- **5. Follow only the current style rules**: Write in clear, natural, modern English unless a rule in \`Active Standing Instructions\` (if any) says otherwise. Earlier messages in the chat may follow style or format rules that are no longer active (e.g., haikus, riddles, all caps, a different currency, a sign-off tag). Don't carry those over; follow only the instructions active now.
+- **6. Tag peers by @Name when you need them**: When an option, schedule, or cutoff you mention needs a peer's domain to check feasibility (e.g., a duration they own or the group's constraints), end that point with a short question to them by @Name (e.g., "— @${examplePeer}, does that work on your side?"), unless you've been told this is the final wrap-up. When you answer, build on, or push back on something a peer said, address them by @Name. Don't tag a peer about something they've already covered in the chat.`,
   ];
 
   if (applicableRules.length > 0) {
@@ -276,13 +269,13 @@ export function buildAgentSystemPrompt(
       .map((r) => `- [${r.scope === 'global' ? 'Global Rule' : `Rule for ${profile.name}`}] ${r.rule}`)
       .join('\n');
     sections.push(
-      `## Active Standing Instructions (Strictly Mandatory)\nYou MUST obey these standing rules in this and every response:\n${formattedRules}`,
+      `## Active Standing Instructions\nThe user set these rules for how you respond. Follow them in every message. They take precedence over the default style, format, and length guidance in this prompt, including the response length section, but not over your domain lane or your vault's facts. If two rules conflict, the later one wins.\n${formattedRules}`,
     );
   }
 
   if (opts.thesis) {
     sections.push(
-      `## Assigned Focus for This Turn\nCore thesis to cover (stay strictly within this point and your domain): ${opts.thesis}`,
+      `## Your Focus for This Message\n${opts.thesis}\nThis is your part of the user's latest message, assigned by a coordinator who can't see your vault. If answering that message needs something from your vault it didn't mention (such as a key constraint), include it, but don't drift into unrelated topics or your teammates' parts. Don't mention this assignment.`,
     );
   }
 
@@ -294,34 +287,36 @@ export function buildAgentSystemPrompt(
     }
   }
   const peerThesisLines = Array.from(seenTheses).map((line) => `- ${line}`);
-  if (peerThesisLines.length > 0) {
-    sections.push(
-      `## Asymmetric Anti-Repetition Notice (STRICT)
-Earlier speakers in this wave are already covering:
-${peerThesisLines.join('\n')}
-- When another agent is already speaking in this wave, DO NOT write an intro recap, DO NOT restate options or facts that another agent is covering, and DO NOT repeat the same action items.
-- Jump straight into your single unique domain point in 1 to 3 concise sentences.`,
-    );
-  }
-
-  if (opts.coSpeakers && opts.coSpeakers.length > 0) {
-    const coNames = opts.coSpeakers
-      .filter((id) => id !== agentId)
-      .map((id) => getAgentProfile(id, opts.runtimeConfig).name);
-    if (coNames.length > 0) {
-      const joinedCoNames = coNames.join(' and ');
-      const taggedCoNames = coNames.map((n) => `@${n}`).join(' or ');
-      sections.push(
-        `## Co-Speakers Active Right Now (Parallel Turn Awareness)
-${joinedCoNames} ${coNames.length === 1 ? 'is' : 'are'} ALREADY answering their part of the user's question concurrently in this exact same wave right next to you!
-- Do NOT ask ${taggedCoNames} a question about their part of the user's prompt, and do NOT tell the user to "check with ${taggedCoNames}" or "let ${taggedCoNames} share...", because they are already typing it right now!
-- Simply deliver your own domain's part cleanly. (You may still tag a teammate who is NOT in [${joinedCoNames}] if their domain constraint check is needed next.)`,
+  const alongsideNames = Array.from(
+    new Set([
+      ...(opts.priorSpeakerTheses ?? []).map((p) => getAgentProfile(p.agentId, opts.runtimeConfig).name),
+      ...(opts.coSpeakers ?? [])
+        .filter((id) => id !== agentId)
+        .map((id) => getAgentProfile(id, opts.runtimeConfig).name),
+    ]),
+  );
+  if (alongsideNames.length > 0 || peerThesisLines.length > 0) {
+    const who = alongsideNames.length > 0 ? alongsideNames.join(' and ') : 'Some teammates';
+    const lines = [
+      '## Teammates Answering Alongside You',
+      `${who} ${alongsideNames.length === 1 ? 'is' : 'are'} answering at the same time as you, so you can't see their messages.`,
+    ];
+    if (peerThesisLines.length > 0) {
+      lines.push(
+        "Here is the short topic assigned to each teammate listed below; assume they'll cover it fully:",
+        ...peerThesisLines,
       );
     }
+    lines.push(
+      `Don't open with a recap${peerThesisLines.length > 0 ? ", and don't restate the options, facts, or next steps in those topics" : ''}. Don't @ask these teammates, or tell the user to check with them, about anything their assigned topic or their domain's part of the user's question already covers, since those answers are arriving now. Asking them about something else is fine. Go straight to what your domain adds.`,
+    );
+    sections.push(lines.join('\n'));
   }
 
   if (opts.effort) {
-    sections.push(`## Response Length & Effort Calibration (${opts.effort})\n${EFFORT_INSTRUCTIONS[opts.effort]}`);
+    sections.push(
+      `## Response Length\n${EFFORT_INSTRUCTIONS[opts.effort]} Plan your answer to fit, so it ends on a complete sentence.`,
+    );
   }
 
   if (opts.waveIndex && opts.waveIndex >= 1 && opts.previousWaveSpeakers && opts.previousWaveSpeakers.length > 0) {
@@ -330,14 +325,14 @@ ${joinedCoNames} ${coNames.length === 1 ? 'is' : 'are'} ALREADY answering their 
       .map((id) => `@${getAgentProfile(id, opts.runtimeConfig).name}`);
     if (prevNames.length > 0) {
       sections.push(
-        `## Follow-Up Wave Peer Connection (Wave ${opts.waveIndex})\nYou are replying directly after ${prevNames.join(' and ')}. Start or anchor your response by addressing ${prevNames[0]} by name (e.g. "${prevNames[0]}, ...") as you connect your private domain facts/constraints to what they just shared.${opts.waveIndex >= 2 ? ' Since you are resolving a constraint raised by your teammate, state the concrete alternative option or answer right now in this message and do NOT end with "Would you like me to suggest alternatives?" or ask further questions.' : ''}`,
+        `## Replying to Your Teammates\nYou're replying right after ${prevNames.join(' and ')}. Open by addressing the teammate whose message you're responding to by @Name, and connect your vault's facts to what they said. If they raised a problem with something you proposed, name the concrete alternative in this message instead of offering to find one.`,
       );
     }
   }
 
   if (opts.isFinalWave) {
     sections.push(
-      `## Final Synthesis Wave\nWrap up the current exchange concisely with a clear conclusion and do not ask further open questions to other agents.`,
+      `## Final Wrap-Up\nThis is the last round of replies; teammates won't respond after this. Say where things landed from your domain's side (what works, what doesn't, what the group should pick), referencing teammates' points briefly rather than recapping them. Don't ask teammates questions.`,
     );
   }
 
@@ -349,19 +344,19 @@ ${joinedCoNames} ${coNames.length === 1 ? 'is' : 'are'} ALREADY answering their 
     : opts.steeringContinuation;
 
   if (activeContinuation) {
+    const { flushedContent, redirectInstruction } = activeContinuation;
     sections.push(
-      `## Mid-Stream Steering Continuation (CRITICAL — SURGICAL IN-PLACE RETROFIT & COMPLETION)
-You were in the middle of writing a response and have emitted the following partial draft so far:
-<already_spoken>${activeContinuation.flushedContent}</already_spoken>
-
-The user just interjected with this live redirect instruction: "${activeContinuation.redirectInstruction}"
-Your output will replace your message bubble in-place, so you MUST output the COMPLETE, updated message from the beginning by surgically editing <already_spoken> and then finishing the rest of your response:
-1. PRESERVE UNAFFECTED WORDING VERBATIM: Keep the exact opening wording, sentence structure, and unaffected parts of <already_spoken>, changing ONLY the specific values, units, currency, format, or length required by "${activeContinuation.redirectInstruction}".
-   - Example (Currency/Unit Change): If <already_spoken> was "Looking at the flight options, Flight A is $650 and Flight B is $820 " and the user says "convert all prices to Japanese Yen instead", output "Looking at the flight options, Flight A is ¥97,500 and Flight B is ¥123,000..." (preserving "Looking at the flight options, Flight A is ... and Flight B is ..." and only replacing the USD amounts with the requested currency, then completing the rest of your answer in that currency).
-   - Example (Partial Length/Scope Change): If <already_spoken> had two sentences on food and started a paragraph on transit, and the user says "keep your transit part to one short sentence", keep the two food sentences verbatim and condense only the transit part into one short sentence.
-2. STRICTLY OBEY THE USER'S EXACT REDIRECT ("${activeContinuation.redirectInstruction}"):
-   - Change ONLY what the redirect asks for. Do not rewrite unrelated sentences, and do not mention or acknowledge that you were redirected.
-3. Stay strictly within ${profile.name}'s domain (${profile.roleTitle})—do not answer parts of the prompt that belong to your peers' domains.`,
+      flushedContent.trim()
+        ? `## Revising Your In-Progress Message
+You were partway through this message when a new instruction arrived:
+<already_spoken>${flushedContent}</already_spoken>
+Instruction: "${redirectInstruction}"
+Your output replaces the whole message on screen, so write the complete message from the start:
+1. Keep the wording of <already_spoken> wherever the instruction doesn't require a change, and change only the values, units, format, or length it asks for. For example, if it said "the first option is $100 and the second is $200" and the instruction is to use yen, write "the first option is ¥15,000 and the second is ¥30,000" and keep the rest. If the instruction targets one part ("keep the transit part to one sentence"), condense only that part.
+2. Then finish the message following the instruction. It takes precedence over the response length section.
+3. Don't mention or acknowledge the instruction.`
+        : `## Revising Your In-Progress Message
+A new instruction arrived before you started writing: "${redirectInstruction}". Follow it in your message; it takes precedence over the response length section. Don't mention or acknowledge it.`,
     );
   }
 

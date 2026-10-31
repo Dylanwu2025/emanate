@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 736 636" width="736" height="636" role="img" aria-label="Emanate architecture: a browser talks to a single Node.js process over REST and SSE. Inside, an HTTP edge feeds an orchestrator that consults a turn router and SQLite, spawns three concurrent abortable agents named Maya, Liam and Zoe, which stream through an LLM gateway and read only their own scenario vault file. The gateway calls an external LLM API.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; fill: #1f2328; }
+    .n { fill: #ffffff; stroke: #1f2328; }
+    .g { fill: #f6f8fa; stroke: #656d76; }
+    .f { fill: none; stroke: #d0d7de; }
+    .e { fill: none; stroke: #1f2328; }
+    .t { font-weight: 600; }
+    .s { fill: #656d76; }
+    .bc { fill: #1f2328; }
+    .b { fill: #ffffff; font-weight: 600; }
+    .mk { fill: #1f2328; }
+    .bg { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .n { fill: #161b22; stroke: #e6edf3; }
+      .g { fill: #21262d; stroke: #8b949e; }
+      .f { stroke: #30363d; }
+      .e { stroke: #e6edf3; }
+      .s { fill: #8b949e; }
+      .bc { fill: #e6edf3; }
+      .b { fill: #0d1117; }
+      .mk { fill: #e6edf3; }
+      .bg { fill: #0d1117; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="mk" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="736" height="636" rx="8"/>
+
+  <rect class="n" x="256" y="8" width="224" height="48" rx="6"/>
+  <text class="t" x="368" y="25" text-anchor="middle" dominant-baseline="middle">Browser</text>
+  <text class="s" x="368" y="43" text-anchor="middle" dominant-baseline="middle">vanilla JS &#183; sorts by seq</text>
+
+  <line class="e" x1="340" y1="56" x2="340" y2="104" marker-end="url(#arrow)"/>
+  <text class="s" x="332" y="80" text-anchor="end" dominant-baseline="middle">REST</text>
+  <line class="e" x1="396" y1="104" x2="396" y2="56" marker-end="url(#arrow)"/>
+  <text class="s" x="404" y="80" dominant-baseline="middle">SSE</text>
+  <circle class="bc" cx="448" cy="80" r="9"/>
+  <text class="b" x="448" y="80" text-anchor="middle" dominant-baseline="middle">1</text>
+
+  <rect class="f" x="12" y="104" width="712" height="436" rx="8"/>
+  <text class="s" x="24" y="124" dominant-baseline="middle">Node.js &#183; one process &#183; one port</text>
+
+  <rect class="n" x="256" y="136" width="224" height="48" rx="6"/>
+  <text class="t" x="368" y="153" text-anchor="middle" dominant-baseline="middle">HTTP edge</text>
+  <text class="s" x="368" y="171" text-anchor="middle" dominant-baseline="middle">REST in &#183; SSE out</text>
+
+  <line class="e" x1="368" y1="184" x2="368" y2="232" marker-end="url(#arrow)"/>
+
+  <rect class="n" x="24" y="232" width="184" height="64" rx="6"/>
+  <text class="t" x="116" y="256" text-anchor="middle" dominant-baseline="middle">Turn router</text>
+  <text class="s" x="116" y="276" text-anchor="middle" dominant-baseline="middle">rules first, LLM second</text>
+  <circle class="bc" cx="204" cy="236" r="9"/>
+  <text class="b" x="204" y="236" text-anchor="middle" dominant-baseline="middle">3</text>
+
+  <rect class="n" x="256" y="232" width="224" height="64" rx="6"/>
+  <text class="t" x="368" y="256" text-anchor="middle" dominant-baseline="middle">Orchestrator</text>
+  <text class="s" x="368" y="276" text-anchor="middle" dominant-baseline="middle">waves &#183; steering &#183; stop</text>
+
+  <rect class="n" x="524" y="232" width="192" height="64" rx="6"/>
+  <text class="t" x="620" y="256" text-anchor="middle" dominant-baseline="middle">SQLite &#183; WAL</text>
+  <text class="s" x="620" y="276" text-anchor="middle" dominant-baseline="middle">messages &#183; rules &#183; settings</text>
+
+  <line class="e" x1="208" y1="264" x2="256" y2="264" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <line class="e" x1="480" y1="264" x2="524" y2="264" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <circle class="bc" cx="502" cy="264" r="9"/>
+  <text class="b" x="502" y="264" text-anchor="middle" dominant-baseline="middle">2</text>
+
+  <line class="e" x1="368" y1="296" x2="368" y2="344" marker-end="url(#arrow)"/>
+  <text class="s" x="376" y="320" dominant-baseline="middle">spawn per wave</text>
+
+  <rect class="g" x="200" y="344" width="336" height="76" rx="6"/>
+  <text class="s" x="212" y="364" dominant-baseline="middle">Agents &#183; concurrent, abortable</text>
+  <rect class="n" x="216" y="380" width="96" height="30" rx="15"/>
+  <text class="t" x="264" y="395" text-anchor="middle" dominant-baseline="middle">Maya</text>
+  <rect class="n" x="320" y="380" width="96" height="30" rx="15"/>
+  <text class="t" x="368" y="395" text-anchor="middle" dominant-baseline="middle">Liam</text>
+  <rect class="n" x="424" y="380" width="96" height="30" rx="15"/>
+  <text class="t" x="472" y="395" text-anchor="middle" dominant-baseline="middle">Zoe</text>
+  <circle class="bc" cx="536" cy="344" r="9"/>
+  <text class="b" x="536" y="344" text-anchor="middle" dominant-baseline="middle">4</text>
+
+  <line class="e" x1="116" y1="296" x2="116" y2="468" marker-end="url(#arrow)"/>
+  <text class="s" x="108" y="386" text-anchor="end" dominant-baseline="middle">JSON calls</text>
+
+  <line class="e" x1="260" y1="420" x2="260" y2="468" marker-end="url(#arrow)"/>
+  <text class="s" x="268" y="444" dominant-baseline="middle">stream tokens</text>
+  <line class="e" x1="476" y1="420" x2="476" y2="468" marker-end="url(#arrow)"/>
+  <text class="s" x="484" y="444" dominant-baseline="middle">own file only</text>
+
+  <rect class="n" x="92" y="468" width="200" height="56" rx="6"/>
+  <text class="t" x="192" y="489" text-anchor="middle" dominant-baseline="middle">LLM gateway</text>
+  <text class="s" x="192" y="507" text-anchor="middle" dominant-baseline="middle">provider set in .env</text>
+  <circle class="bc" cx="292" cy="472" r="9"/>
+  <text class="b" x="292" y="472" text-anchor="middle" dominant-baseline="middle">5</text>
+
+  <rect class="n" x="416" y="468" width="200" height="56" rx="6"/>
+  <text class="t" x="516" y="489" text-anchor="middle" dominant-baseline="middle">Scenario vaults</text>
+  <text class="s" x="516" y="507" text-anchor="middle" dominant-baseline="middle">one .md file per agent</text>
+  <circle class="bc" cx="616" cy="472" r="9"/>
+  <text class="b" x="616" y="472" text-anchor="middle" dominant-baseline="middle">6</text>
+
+  <line class="e" x1="192" y1="524" x2="192" y2="580" marker-end="url(#arrow)"/>
+  <text class="s" x="200" y="556" dominant-baseline="middle">HTTPS</text>
+
+  <rect class="n" x="92" y="580" width="200" height="44" rx="6"/>
+  <text class="t" x="192" y="595" text-anchor="middle" dominant-baseline="middle">External LLM API</text>
+  <text class="s" x="192" y="613" text-anchor="middle" dominant-baseline="middle">any of 4 providers</text>
+</svg>

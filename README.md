@@ -1,104 +1,115 @@
-# Emanate — Multi-Turn Agent Steering Group Chat
+# Emanate
 
-A real-time, multi-agent group chat web application where three distinct agents (**Maya**, **Liam**, and **Zoe**) with strictly isolated private knowledge vaults collaborate concurrently in a shared conversation. Users can steer any or all agents **in flight while they are actively streaming**—pivoting the trajectory of an ongoing response within the exact same message bubble, establishing persistent standing rules across page reloads, or stopping generation immediately—without exposing any internal orchestration mechanics in the UI.
+A three-agent group chat. Maya, Liam, and Zoe each have a private knowledge vault. They stream concurrently, follow up with each other when a question needs another agent's facts, and you can redirect any of them **while they are still typing**, in the same message bubble.
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the complete system architecture and sequence diagrams.
+Internal machinery (effort, theses, epochs, standing rules) never reaches the browser.
 
----
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for sequence diagrams and the full data model.
 
-## 1. Quickstart
+## How it is built
 
-### Prerequisites
-- **Node.js** `v20+` and **npm**
+One Node.js process, one port, no queue, no extra containers. The browser is vanilla JS. Persistence is SQLite. Model choice is an `.env` change.
 
-### Install & Run
+![Architecture: browser, HTTP edge, router, orchestrator, three abortable agents, SQLite, LLM gateway, scenario vaults](docs/architecture.svg)
+
+Numbered decisions, matching the diagram:
+
+1. **REST in, SSE out.** The wire carries only public chat fields (`seq`, `id`, `role`, `content`, `status`). Orchestration internals cannot leak into the UI.
+2. **`seq` is reserved in SQLite before any token streams.** Live view and page reload both sort by that one integer, so concurrent streams never reorder.
+3. **Cheap deterministic rules run first** (explicit `stop`, `@mentions`, obvious standing rules). The LLM is only asked when the case is actually ambiguous.
+4. **Each agent stream has its own abort controller and an epoch.** Steering one agent does not touch the others. See [Steering](#steering) below.
+5. **One `LLMProvider` interface.** Switching OpenAI / Anthropic / Gemini / OpenAI-compatible is a `.env` change. Tests use a scripted mock and run offline.
+6. **An agent loads only its own markdown file.** Isolation is structural. A new scenario is a folder, not a code change.
+
+## How a turn works
+
+A user message starts a turn. The router assigns each agent an effort tier and a one-line thesis. Later speakers are told what earlier speakers will cover, so overlapping points are stated once. Agents that are `silent` never get a bubble.
+
+Speaking agents reserve a `seq`, then stream in parallel. A **wave barrier** waits for every stream to finish. Then a follow-up check asks: did anyone raise a question that needs another agent's private facts? If so, another wave starts, up to five. Wave 5 wraps up with no further questions.
+
+![Turn lifecycle: user message, route wave, parallel streams, wave barrier, follow-up check looping at most five times, then idle](docs/turn-lifecycle.svg)
+
+| Effort | What it does | Max tokens |
+| --- | --- | ---: |
+| silent | No message created | — |
+| light | One short sentence | 120 |
+| standard | A few sentences | 320 |
+| deep | Detailed synthesis | 800 |
+
+## Steering
+
+If you send a message while agents are still streaming, it is classified as one of:
+
+- **`steer`** — redirect only the named (or implied) agents, in the same bubble.
+- **`stop_all`** — freeze every stream immediately.
+- **`new_turn`** — stop everyone, then start a fresh turn.
+
+A standing rule (`Always answer in bullet points`, `Maya, quote prices in JPY`) is saved to SQLite and survives reload.
+
+On `steer`, only the targeted agent is interrupted:
+
+1. Snapshot the text already on screen.
+2. Bump that stream's epoch (`1 → 2`).
+3. Abort the upstream LLM request.
+4. Stream only the new suffix into the **same** `id` and `seq`.
+
+A late token from the aborted request still has epoch 1, so it is dropped. Untargeted agents keep streaming.
+
+![Steering: Maya is redirected in-place while Liam continues untouched; a late epoch-1 token is dropped](docs/steering.svg)
+
+## Quickstart
+
+Node.js `v20+`.
+
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Configure your LLM API key in .env
-cp .env.example .env
-# Edit .env and set LLM_API_KEY="your-api-key"
-
-# 3. Start the web app & API server (defaults to http://localhost:3000)
-npm start
+cp .env.example .env   # set LLM_API_KEY
+npm start              # http://localhost:3000
 ```
 
-Open **[http://localhost:3000](http://localhost:3000)** in your browser.
-
-### Run Verification & Test Suite
 ```bash
-# TypeScript strict typecheck
 npm run typecheck
-
-# Full automated test suite (Part 1–4 unit, integration & E2E tests)
 npm test
 ```
 
----
+## Swap the model
 
-## 2. Swapping LLM Providers & Models (Zero Code Changes)
-
-All LLM calls (`streamChat` and `completeJSON`) route through a unified provider-agnostic gateway in `src/server/llm.ts` controlled purely via environment variables in `.env`:
+All LLM calls go through `src/server/llm.ts`, configured only by `.env`:
 
 ```bash
-LLM_PROVIDER="openai"          # "openai" | "anthropic" | "gemini" | "openai-compatible"
-LLM_MODEL="gpt-4o-mini"        # Model slug for the chosen provider
-LLM_API_KEY="sk-..."           # Your API key
-LLM_BASE_URL=""                # Optional custom base URL (e.g. OpenRouter, local vLLM, Ollama)
-STREAM_PACE_MS="25"            # Optional token pacing (ms) for smooth visual mid-stream steering
+LLM_PROVIDER="openai"          # openai | anthropic | gemini | openai-compatible
+LLM_MODEL="gpt-4o-mini"
+LLM_API_KEY="sk-..."
+LLM_BASE_URL=""                # optional: OpenRouter, vLLM, Ollama
+STREAM_PACE_MS="25"            # optional token pacing for mid-stream steering
 ```
 
-- **Tested Live Configuration**: Built and verified end-to-end against **OpenAI `gpt-4o-mini`** (`LLM_PROVIDER="openai"`, `LLM_MODEL="gpt-4o-mini"`).
-- **Switching to Anthropic**: Set `LLM_PROVIDER="anthropic"`, `LLM_MODEL="claude-3-5-haiku-latest"`, and `LLM_API_KEY="sk-ant-..."`.
-- **Switching to Google Gemini**: Set `LLM_PROVIDER="gemini"`, `LLM_MODEL="gemini-2.5-flash"`, and `LLM_API_KEY="AIza..."`.
-- **Switching to OpenRouter / Local Models**: Set `LLM_PROVIDER="openai-compatible"`, `LLM_BASE_URL="https://openrouter.ai/api/v1"`, `LLM_MODEL="..."`, and `LLM_API_KEY="..."`.
+Built and verified against OpenAI `gpt-4o-mini`. For Anthropic, Gemini, or a local / OpenRouter endpoint, change the three provider fields; no code change.
 
----
+## The group
 
-## 3. The Group: 3 Agents with Isolated Private Contexts
+The same three slots (Maya, Liam, Zoe) run any **scenario**. Pick one from the header dropdown; switching starts a new chat. Two ship today: **Kyoto & Osaka Trip** (`kyoto-trip`, default) and **Project Nova EU Launch** (`nova-launch`).
 
-The group is planning a 5-day trip to **Kyoto & Osaka** for four friends (Sam, Priya, Alex, and Jordan). Each agent only has access to its own private markdown file under `src/server/contexts/<agent>.md` plus the shared chat transcript and active standing rules:
+A new scenario is a folder `src/server/scenarios/<id>/` with `maya.md`, `liam.md`, `zoe.md`, and a `scenario.json` manifest. Listed at `GET /api/scenarios`; activated with `POST /api/scenario`.
 
-| Agent | Role & Personality | Exclusive Private Vault (`src/server/contexts/*.md`) |
+Default scenario, a 5-day Kyoto & Osaka trip for four friends:
+
+| Agent | Role | Exclusive private vault |
 | :--- | :--- | :--- |
-| **Maya** | **Budget, Flights & Lodging** — Direct, numbers-driven, cost-conscious. | $4,800 total group budget ($1,200/person); exchange rate `1 USD = 150 JPY`; **Flight A** (ANA 6:45 AM, $650, lands 11:00 AM) vs. **Flight B** (JAL 11:30 AM, $820, lands 3:45 PM); **Ryokan Gion** ($380/night, strict **6:00 PM check-in cutoff**) vs. **Hotel Granvia** ($290/night, 24h check-in at Kyoto Station); **Cross Hotel Osaka** ($260/night). |
-| **Liam** | **Local Guide (Food, Sights & Transit)** — Warm, food-obsessed, timing-focused. | **KIX to Gion** takes **2 hours 15 minutes** door-to-door after customs; **KIX to Kyoto Station** takes **1 hour 35 minutes**; **Nishiki Market Street Food Tour** (11:00 AM–2:00 PM, heavy shared-grill shellfish/seafood); **Arashiyama Tofu Kaiseki** (100% vegetarian & shellfish-free, last seating 7:30 PM); Fushimi Inari & Kiyomizu-dera crowd windows. |
-| **Zoe** | **Group Dynamics, Dietary & Pacing** — Empathetic, protective of group health & sleep. | **Sam** has a **severe anaphylactic shellfish allergy** (cannot be around shared seafood grills) and boat/bus motion sickness; **Priya** is **strictly vegetarian**; unanimous group rule against **waking up before 7:30 AM** (ruling out 6:45 AM flights). |
+| **Maya** | Budget, flights & lodging | $4,800 group budget; Flight A vs B; Ryokan Gion (6:00 PM cutoff) vs Hotel Granvia |
+| **Liam** | Food, sights & transit | KIX → Gion is 2h 15m; Nishiki shared-grill seafood tour; Arashiyama tofu kaiseki |
+| **Zoe** | Group health & pacing | Sam's shellfish allergy; Priya is vegetarian; no waking before 7:30 AM |
 
----
+## Try these
 
-## 4. Sample Prompts to Test Every Capability
+1. **Cross-vault synthesis + follow-up waves.** *Should we take Flight B and stay at Ryokan Gion on Day 1?* Maya quotes the 6:00 PM cutoff; Liam reveals 2h 15m transit (zero buffer); the next wave has Maya suggest Hotel Granvia and Zoe veto the 6:45 AM Flight A.
 
-1. **Cross-Agent Private Vault Synthesis + Bounded A2A Follow-Up Waves**:
-   > *"Should we take Flight B and stay at Ryokan Gion on Day 1?"*
-   - **What happens**: Maya shares Flight B's price ($820, lands 3:45 PM) and Ryokan Gion's strict 6:00 PM cutoff; Liam reveals KIX-to-Gion transit takes 2h 15m (arriving at 6:00 PM sharp with zero buffer); in the automatic A2A follow-up wave, Maya recommends Hotel Granvia ($290/night, 24h check-in) and Zoe vetoes the 6:45 AM Flight A due to the group's 7:30 AM sleep rule. The exchange resolves and ends on its own.
+2. **Steer one agent mid-stream.** Ask *@Maya and @Liam* for a flight and hotel breakdown, then while both are streaming: *Maya, convert all prices to Japanese Yen instead.* Liam continues. Maya pivots to yen **in the same bubble**.
 
-2. **Selective Per-Agent Mid-Stream Steering (Same-Bubble Continuation)**:
-   > First send: *"@Maya and @Liam give us a full breakdown of flight and hotel prices in USD plus airport transit times."*
-   > While both are actively streaming, immediately send: *"Maya, convert all prices to Japanese Yen instead"*
-   - **What happens**: Liam's stream continues uninterrupted. Maya's stream pauses at the exact character already flushed to the screen and seamlessly pivots into Japanese Yen (`¥97,500`, `¥123,000`, `¥57,000`) **inside the exact same message bubble** (`id` and `seq` unchanged).
+3. **Steer everyone.** While streams are active: *Actually, wrap up in one short uppercase sentence.*
 
-3. **Global Mid-Stream Steering**:
-   > While multiple agents are streaming, send: *"Actually, wrap up in one short uppercase sentence"*
-   - **What happens**: All currently active streams pivot in-place within their existing bubbles to finish in uppercase.
+4. **Standing rule across reload.** *Always answer in concise bullet points from now on.* Refresh. New questions still come back as bullets, in the original `seq` order.
 
-4. **Persistent Standing Instructions Across Reloads**:
-   > Send: *"Always answer in concise bullet points from now on"* (or *"Maya, always quote prices in JPY"*)
-   - **What happens**: Saved in SQLite `standing_rules` (automatically superseding older conflicting rules in the same scope). Refresh the browser (`Cmd+R`) and ask a new question—both the exact message ordering (`seq ASC`) and the standing rule persist.
+5. **Silence gate.** *@Maya what is the total group budget?* Liam and Zoe stay silent. Maya answers in one sentence (`light`).
 
-5. **Pre-Response Effort Calibration & Silence Gate (Stretch)**:
-   > Send: *"@Maya what is the total group budget?"*
-   - **What happens**: Liam and Zoe stay completely silent (zero bubbles created), and Maya responds with a calibrated `light` 1-sentence answer.
-
-6. **Instant Stop-All**:
-   > Click the **Stop** button or type `stop` while agents are streaming.
-   - **What happens**: All active streams and any pending A2A follow-up waves halt immediately (`<5ms`), freezing each message cleanly at its flushed text.
-
----
-
-## 5. Deliberate Design Decisions & Scope Cuts
-
-- **Single Integer `seq` Defended Ordering**: Every message reserves an auto-incrementing integer `seq` in SQLite **before** its LLM stream starts. Both live SSE reconciliation and full page reloads (`GET /api/state`) sort strictly by `seq ASC`, guaranteeing identical message ordering across reloads regardless of which concurrent stream finishes first.
-- **Zero Exposed Mechanism in the UI**: The DOM and wire payloads (`PublicWireMessage`) contain strictly standard chat fields (`seq`, `id`, `role`, `agentId`, `agentName`, `content`, `status`, `createdAt`). Internal orchestration concepts (`effort`, `thesis`, `peerTheses`, `epoch`, `standingRules`, steering actions) are never sent to or rendered in the browser.
-- **Focused Scope**: Built with a zero-bloat 2-table SQLite schema (`messages`, `standing_rules`) and a single-port Node HTTP + SSE server serving the group chat web UI directly, avoiding unnecessary external queues, multi-container infrastructure, or exposed debug dashboards.
+6. **Stop.** Click **Stop** (or type `stop`) while agents are streaming. Everything freezes at the flushed text.

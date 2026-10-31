@@ -6,6 +6,17 @@ import type { CustomAgentRuntimeConfig } from './agents.js';
 import { EmanateStore } from './db.js';
 import { createLLMProvider, type LLMProvider } from './llm.js';
 import { GroupChatOrchestrator, type OrchestratorSSEEvent } from './orchestrator.js';
+import {
+  DEFAULT_SCENARIO_ID,
+  getScenario,
+  listScenarios,
+  toPublicScenario,
+  type ScenarioDefinition,
+} from './scenarios.js';
+
+const ACTIVE_SCENARIO_SETTING = 'activeScenarioId';
+
+type ServerSSEEvent = OrchestratorSSEEvent | { type: 'scenario.changed'; scenarioId: string };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = join(__dirname, '..', 'client');
@@ -84,18 +95,24 @@ async function readRequestBody(req: IncomingMessage): Promise<string> {
 export function createAppServer(options: AppServerOptions = {}): AppServerInstance {
   const store = options.store ?? new EmanateStore(options.dbPath ?? ':memory:');
   const llm = options.llm ?? createLLMProvider();
+
+  const usesCustomConfig = Boolean(options.runtimeConfig || options.orchestrator);
+  let activeScenario: ScenarioDefinition | undefined = usesCustomConfig
+    ? undefined
+    : (getScenario(store.getSetting(ACTIVE_SCENARIO_SETTING) ?? '') ?? getScenario(DEFAULT_SCENARIO_ID));
+
   const orchestrator =
     options.orchestrator ??
     new GroupChatOrchestrator({
       store,
       llm,
       streamPaceMs: options.streamPaceMs,
-      runtimeConfig: options.runtimeConfig,
+      runtimeConfig: options.runtimeConfig ?? activeScenario?.runtimeConfig,
     });
 
   const sseClients = new Set<ServerResponse>();
 
-  const broadcastSSE = (event: OrchestratorSSEEvent) => {
+  const broadcastSSE = (event: ServerSSEEvent) => {
     const serialized = `data: ${JSON.stringify(event)}\n\n`;
     for (const client of sseClients) {
       if (!client.writableEnded) {
@@ -138,6 +155,38 @@ export function createAppServer(options: AppServerOptions = {}): AppServerInstan
         sendJSON(res, 200, {
           messages: orchestrator.getPublicMessages(),
         });
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/api/scenarios') {
+        sendJSON(res, 200, {
+          activeScenarioId: activeScenario?.id ?? null,
+          scenarios: listScenarios().map(toPublicScenario),
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/scenario') {
+        const rawBody = await readRequestBody(req);
+        let parsed: { scenarioId?: unknown } = {};
+        try {
+          parsed = rawBody ? JSON.parse(rawBody) : {};
+        } catch {
+          sendJSON(res, 400, { error: 'Invalid JSON request body.' });
+          return;
+        }
+
+        const scenario = typeof parsed.scenarioId === 'string' ? getScenario(parsed.scenarioId) : undefined;
+        if (!scenario) {
+          sendJSON(res, 404, { error: `Unknown scenario: ${String(parsed.scenarioId)}` });
+          return;
+        }
+
+        await orchestrator.switchRuntimeConfig(scenario.runtimeConfig);
+        activeScenario = scenario;
+        store.setSetting(ACTIVE_SCENARIO_SETTING, scenario.id);
+        broadcastSSE({ type: 'scenario.changed', scenarioId: scenario.id });
+        sendJSON(res, 200, { ok: true, activeScenarioId: scenario.id, messages: [] });
         return;
       }
 

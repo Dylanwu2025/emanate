@@ -147,6 +147,8 @@ export class EmanateStore {
   private readonly stmtListActiveRulesForAgent: Database.Statement;
   private readonly stmtListAllActiveRules: Database.Statement;
   private readonly stmtListAllRules: Database.Statement;
+  private readonly stmtGetSetting: Database.Statement;
+  private readonly stmtSetSetting: Database.Statement;
 
   constructor(dbPath = ':memory:') {
     this.db = new Database(dbPath);
@@ -221,6 +223,11 @@ export class EmanateStore {
       FROM standing_rules
       ORDER BY created_at ASC, rowid ASC
     `);
+    this.stmtGetSetting = this.db.prepare(`SELECT value FROM settings WHERE key = ?`);
+    this.stmtSetSetting = this.db.prepare(`
+      INSERT INTO settings (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `);
   }
 
   private initSchema(): void {
@@ -241,6 +248,11 @@ export class EmanateStore {
         rule TEXT NOT NULL,
         active INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       );
     `);
   }
@@ -386,6 +398,15 @@ export class EmanateStore {
 
   listAllStandingRules(): StandingRuleRow[] {
     return this.stmtListAllRules.all() as StandingRuleRow[];
+  }
+
+  getSetting(key: string): string | undefined {
+    const row = this.stmtGetSetting.get(key) as { value: string } | undefined;
+    return row?.value;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.stmtSetSetting.run(key, value);
   }
 
   reset(): void {

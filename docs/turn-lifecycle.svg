@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 736 440" width="736" height="440" role="img" aria-label="Turn lifecycle: a user message is routed per agent into an effort tier and thesis, speaking agents reserve a seq and stream in parallel, a wave barrier waits for all streams, then a follow-up check either loops back for another wave, up to five, or ends the turn idle. Effort tiers: silent creates no message, light allows 120 tokens, standard 320, deep 800.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; fill: #1f2328; }
+    .n { fill: #ffffff; stroke: #1f2328; }
+    .g { fill: #f6f8fa; stroke: #656d76; }
+    .e { fill: none; stroke: #1f2328; }
+    .t { font-weight: 600; }
+    .s { fill: #656d76; }
+    .mk { fill: #1f2328; }
+    .bg { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .n { fill: #161b22; stroke: #e6edf3; }
+      .g { fill: #21262d; stroke: #8b949e; }
+      .e { stroke: #e6edf3; }
+      .s { fill: #8b949e; }
+      .mk { fill: #e6edf3; }
+      .bg { fill: #0d1117; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="mk" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="736" height="440" rx="8"/>
+
+  <rect class="n" x="16" y="40" width="120" height="72" rx="6"/>
+  <text class="t" x="76" y="68" text-anchor="middle" dominant-baseline="middle">User message</text>
+  <text class="s" x="76" y="86" text-anchor="middle" dominant-baseline="middle">one turn begins</text>
+
+  <line class="e" x1="136" y1="76" x2="184" y2="76" marker-end="url(#arrow)"/>
+
+  <rect class="n" x="184" y="40" width="232" height="72" rx="6"/>
+  <text class="t" x="300" y="60" text-anchor="middle" dominant-baseline="middle">Route wave</text>
+  <text class="s" x="300" y="78" text-anchor="middle" dominant-baseline="middle">effort and thesis per agent</text>
+  <text class="s" x="300" y="96" text-anchor="middle" dominant-baseline="middle">later speakers avoid overlap</text>
+
+  <line class="e" x1="416" y1="76" x2="464" y2="76" marker-end="url(#arrow)"/>
+
+  <rect class="n" x="464" y="40" width="256" height="72" rx="6"/>
+  <text class="t" x="592" y="60" text-anchor="middle" dominant-baseline="middle">Stream in parallel</text>
+  <text class="s" x="592" y="78" text-anchor="middle" dominant-baseline="middle">seq reserved before first token</text>
+  <text class="s" x="592" y="96" text-anchor="middle" dominant-baseline="middle">silent agents get no bubble</text>
+
+  <line class="e" x1="592" y1="112" x2="592" y2="184" marker-end="url(#arrow)"/>
+
+  <rect class="n" x="464" y="184" width="256" height="56" rx="6"/>
+  <text class="t" x="592" y="204" text-anchor="middle" dominant-baseline="middle">Wave barrier</text>
+  <text class="s" x="592" y="222" text-anchor="middle" dominant-baseline="middle">wait for every stream to finish</text>
+
+  <line class="e" x1="464" y1="212" x2="416" y2="212" marker-end="url(#arrow)"/>
+
+  <rect class="n" x="184" y="184" width="232" height="72" rx="6"/>
+  <text class="t" x="300" y="204" text-anchor="middle" dominant-baseline="middle">Follow-up check</text>
+  <text class="s" x="300" y="222" text-anchor="middle" dominant-baseline="middle">nextSpeakers &#183; isResolved</text>
+  <text class="s" x="300" y="240" text-anchor="middle" dominant-baseline="middle">wave 5 wraps up, no questions</text>
+
+  <line class="e" x1="300" y1="184" x2="300" y2="112" marker-end="url(#arrow)"/>
+  <text class="s" x="292" y="148" text-anchor="end" dominant-baseline="middle">max 5 follow-up waves</text>
+  <text class="s" x="308" y="148" dominant-baseline="middle">unresolved &#8594; next wave</text>
+
+  <line class="e" x1="300" y1="256" x2="300" y2="304" marker-end="url(#arrow)"/>
+  <text class="s" x="308" y="280" dominant-baseline="middle">resolved or nobody to add</text>
+
+  <rect class="n" x="184" y="304" width="232" height="48" rx="6"/>
+  <text class="t" x="300" y="320" text-anchor="middle" dominant-baseline="middle">Turn idle</text>
+  <text class="s" x="300" y="338" text-anchor="middle" dominant-baseline="middle">SSE turn.idle</text>
+
+  <rect class="g" x="464" y="304" width="256" height="120" rx="6"/>
+  <text class="t" x="476" y="324" dominant-baseline="middle">Effort tier &#8594; max tokens</text>
+  <text x="476" y="348" dominant-baseline="middle">silent</text>
+  <text class="s" x="708" y="348" text-anchor="end" dominant-baseline="middle">no message</text>
+  <text x="476" y="366" dominant-baseline="middle">light</text>
+  <text class="s" x="708" y="366" text-anchor="end" dominant-baseline="middle">120 tokens</text>
+  <text x="476" y="384" dominant-baseline="middle">standard</text>
+  <text class="s" x="708" y="384" text-anchor="end" dominant-baseline="middle">320 tokens</text>
+  <text x="476" y="402" dominant-baseline="middle">deep</text>
+  <text class="s" x="708" y="402" text-anchor="end" dominant-baseline="middle">800 tokens</text>
+</svg>

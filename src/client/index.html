@@ -10,10 +10,10 @@
     <div class="app-shell">
       <header class="chat-header">
         <div class="header-left">
-          <div class="group-emblem" aria-hidden="true">KO</div>
+          <div id="group-emblem" class="group-emblem" aria-hidden="true">KO</div>
           <div class="group-meta">
-            <h1 class="group-title">Kyoto &amp; Osaka Trip</h1>
-            <p class="group-subtitle">5-Day Itinerary · Sam, Priya, Alex &amp; Jordan</p>
+            <h1 id="group-title" class="group-title">Kyoto &amp; Osaka Trip</h1>
+            <p id="group-subtitle" class="group-subtitle">5-Day Itinerary · Sam, Priya, Alex &amp; Jordan</p>
           </div>
         </div>
 
@@ -27,7 +27,7 @@
             <span class="avatar avatar-maya">M</span>
             <span class="participant-info">
               <span class="participant-name">Maya</span>
-              <span class="participant-role">Flights &amp; Budget</span>
+              <span class="participant-role" data-role-for="maya">Flights &amp; Budget</span>
             </span>
           </button>
 
@@ -40,7 +40,7 @@
             <span class="avatar avatar-liam">L</span>
             <span class="participant-info">
               <span class="participant-name">Liam</span>
-              <span class="participant-role">Transit &amp; Food</span>
+              <span class="participant-role" data-role-for="liam">Transit &amp; Food</span>
             </span>
           </button>
 
@@ -53,12 +53,18 @@
             <span class="avatar avatar-zoe">Z</span>
             <span class="participant-info">
               <span class="participant-name">Zoe</span>
-              <span class="participant-role">Group &amp; Dietary</span>
+              <span class="participant-role" data-role-for="zoe">Group &amp; Dietary</span>
             </span>
           </button>
         </div>
 
         <div class="header-actions">
+          <select
+            id="scenario-select"
+            class="scenario-select"
+            aria-label="Choose a scenario"
+            title="Switching scenarios starts a new chat"
+          ></select>
           <button
             type="button"
             id="reset-btn"
@@ -73,13 +79,13 @@
       <main id="message-feed" class="message-feed" aria-live="polite">
         <div id="empty-state" class="empty-state">
           <div class="empty-card">
-            <h2>Plan your 5-day Kyoto &amp; Osaka getaway</h2>
-            <p>
+            <h2 id="welcome-title">Plan your 5-day Kyoto &amp; Osaka getaway</h2>
+            <p id="welcome-text">
               Chat with <strong>Maya</strong> (Flights, Hotels &amp; Budget),
               <strong>Liam</strong> (Transit, Sights &amp; Food), and
               <strong>Zoe</strong> (Group Pacing &amp; Dietary) all in one place.
             </p>
-            <div class="starter-prompts">
+            <div id="starter-prompts" class="starter-prompts">
               <button
                 type="button"
                 class="starter-chip"

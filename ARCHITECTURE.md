@@ -28,7 +28,7 @@ flowchart TB
         
         subgraph ControlPlane["Turn & Steering Control Plane"]
             Router["Unified Turn & Steering Router<br/>- Idle: Effort (silent/light/standard/deep) + Asymmetric Thesis + Rule Extraction<br/>- Active Stream: Selective Steer Target vs Stop vs New Turn"]
-            WaveCoord["Wave Barrier & A2A Coordinator<br/>(Intent-Driven Follow-ups, Max 3 A2A Waves)"]
+            WaveCoord["Wave Barrier & A2A Coordinator<br/>(Intent-Driven Follow-ups, Max 5 A2A Waves)"]
         end
 
         subgraph AgentRuntime["Concurrent Agent Execution Pool"]
@@ -42,10 +42,11 @@ flowchart TB
             Adapter["Unified LLM Gateway<br/>(Env Driven:LLM_PROVIDER, LLM_MODEL, LLM_API_KEY, LLM_BASE_URL)"]
         end
 
-        subgraph Storage["Simple 2-Table SQLite Store"]
+        subgraph Storage["Simple SQLite Store"]
             DB_Msg[("messages<br/>(seq PK, id, role, agent_id, content, status)")]
             DB_Rules[("standing_rules<br/>(id, scope, rule, active)")]
-            Vaults[("Private Context Files<br/>(contexts/maya.md, liam.md, zoe.md)")]
+            DB_Settings[("settings<br/>(key PK, value: activeScenarioId)")]
+            Vaults[("Private Context Files per Scenario<br/>(scenarios/&lt;id&gt;/maya.md, liam.md, zoe.md)")]
         end
     end
 
@@ -72,7 +73,9 @@ flowchart TB
 
 ### 3.1 The Group: Distinct Personalities & Private Context Isolation
 
-| Agent Name | Role & Personality | Private Context Vault (`src/server/contexts/<agent>.md`) |
+Each scenario lives in `src/server/scenarios/<id>/`: one private vault per agent plus a `scenario.json` manifest whose role, personality, and lane-rule fields become `profileOverrides` and whose folder becomes `contextsDir` in `CustomAgentRuntimeConfig`. `GroupChatOrchestrator.switchRuntimeConfig` stops all streams, clears the chat, and swaps the config; the active scenario id is stored in a `settings` table. The table below describes the default `kyoto-trip` scenario.
+
+| Agent Name | Role & Personality | Private Context Vault (`src/server/scenarios/kyoto-trip/<agent>.md`) |
 | :--- | :--- | :--- |
 | **Maya** | **Budget, Flights & Lodging** — Direct, numbers-first, cost-conscious, focused on concrete prices and booking cutoffs. | $4,800 total group budget ($1,200/person); Flight A (ANA 6:45 AM, $650, lands 11:00 AM) vs. Flight B (JAL 11:30 AM, $820, lands 3:45 PM); Ryokan Gion ($380/night, strict 6:00 PM check-in cutoff for kaiseki dinner) vs. Hotel Granvia ($290/night, 24h check-in at Kyoto Station). |
 | **Liam** | **Local Guide (Food, Sights & Transit)** — Warm, food-obsessed, energetic storyteller focused on transit timing and authentic spots. | KIX airport to Gion takes 2h 15m after customs; Nishiki Market Street Food Tour (11 AM–2 PM, heavy shared-grill shellfish/seafood); Arashiyama Tofu Kaiseki (vegetarian & shellfish-safe, last seating 7:30 PM); sight crowd windows. |
@@ -95,7 +98,7 @@ Before generating a visible response in any wave, the router outputs for each ag
 - **Wave 1..3 (Intent-Driven Follow-Up)**:
   - Evaluates whether an agent asked a peer a question or revealed a constraint that requires another agent's private facts (`nextSpeakers`, `isResolved`).
   - Stops immediately as soon as `isResolved === true` or `nextSpeakers` is empty.
-  - Capped at a maximum of 3 follow-up waves, where the final wave instructs a concise wrap-up with no further questions.
+  - Capped at a maximum of 5 follow-up waves, where the final wave instructs a concise wrap-up with no further questions.
 
 ### 3.4 Selective Mid-Stream Steering & In-Place Stream Splicing
 When a user submits a message while one or more agents are actively streaming:

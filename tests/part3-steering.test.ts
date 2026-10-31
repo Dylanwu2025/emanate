@@ -76,7 +76,7 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
-          !opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          !opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: [
           'Looking at the flight options, ',
           'Flight A is $650 and Flight B is $820 ',
@@ -101,7 +101,7 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
-          opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: [
           'Looking at the flight options, ',
           'Flight A is ¥97,500 and Flight B is ¥123,000 ',
@@ -254,7 +254,7 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
-          !opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          !opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: ['We have two flights: ', 'Flight A and Flight B ', 'with different schedules...'],
         delayMs: 30,
       });
@@ -262,7 +262,7 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Liam') &&
-          !opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          !opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: ['Transit from KIX ', 'takes 2 hours 15 minutes ', 'by train and taxi...'],
         delayMs: 30,
       });
@@ -271,7 +271,7 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
-          opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: ['—BOOK FLIGHT B AT $820!'],
         delayMs: 5,
       });
@@ -279,7 +279,7 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Liam') &&
-          opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: ['—TAKE THE HARUKA EXPRESS!'],
         delayMs: 5,
       });
@@ -498,7 +498,7 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
-          !opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          !opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: ['Flight A is $650 ', 'and Flight B is $820 ', 'in USD.'],
         delayMs: 30,
       });
@@ -506,7 +506,7 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
-          opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
+          opts.messages[0].content.includes('Revising Your In-Progress Message'),
         chunks: ['—which is ¥97,500 and ¥123,000 in JPY.'],
         delayMs: 5,
       });

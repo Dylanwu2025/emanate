@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 736 340" width="736" height="340" role="img" aria-label="Steering timeline: a user message arrives while Maya and Liam are streaming. A steering classifier picks steer, stop_all or new_turn. For steer, only Maya is targeted: her shown text is snapshotted, her epoch bumps from 1 to 2, the upstream request is aborted, and a continuation streams only the new suffix into the same message id and seq. A late epoch 1 token is dropped. Liam keeps streaming untouched.">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12px; fill: #1f2328; }
+    .n { fill: #ffffff; stroke: #1f2328; }
+    .g { fill: #f6f8fa; stroke: #656d76; }
+    .e { fill: none; stroke: #1f2328; }
+    .d { fill: none; stroke: #656d76; stroke-dasharray: 4 4; }
+    .t { font-weight: 600; }
+    .s { fill: #656d76; }
+    .mk { fill: #1f2328; }
+    .bg { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #e6edf3; }
+      .n { fill: #161b22; stroke: #e6edf3; }
+      .g { fill: #21262d; stroke: #8b949e; }
+      .e { stroke: #e6edf3; }
+      .d { stroke: #8b949e; }
+      .s { fill: #8b949e; }
+      .mk { fill: #e6edf3; }
+      .bg { fill: #0d1117; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="mk" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="736" height="340" rx="8"/>
+
+  <rect class="n" x="200" y="16" width="200" height="56" rx="6"/>
+  <text class="t" x="300" y="36" text-anchor="middle" dominant-baseline="middle">Steering classifier</text>
+  <text class="s" x="300" y="54" text-anchor="middle" dominant-baseline="middle">rules first, LLM second</text>
+
+  <line class="e" x1="400" y1="44" x2="416" y2="44"/>
+  <text class="t" x="424" y="28" dominant-baseline="middle">steer &#183; redirect only targeted agents</text>
+  <text class="s" x="424" y="46" dominant-baseline="middle">stop_all &#183; freeze every stream</text>
+  <text class="s" x="424" y="64" dominant-baseline="middle">new_turn &#183; stop all, start fresh</text>
+  <text class="s" x="424" y="84" dominant-baseline="middle">optional standing rule saved to SQLite</text>
+
+  <line class="d" x1="300" y1="72" x2="300" y2="320"/>
+  <text class="s" x="292" y="96" text-anchor="end" dominant-baseline="middle">user message arrives mid-stream</text>
+
+  <text class="t" x="16" y="128" dominant-baseline="middle">Maya</text>
+  <text class="s" x="16" y="146" dominant-baseline="middle">targeted</text>
+  <rect class="n" x="96" y="114" width="204" height="36" rx="6"/>
+  <text x="198" y="132" text-anchor="middle" dominant-baseline="middle">streaming &#183; epoch 1</text>
+  <line class="e" x1="300" y1="132" x2="332" y2="132" marker-end="url(#arrow)"/>
+  <rect class="n" x="332" y="114" width="388" height="36" rx="6"/>
+  <text x="526" y="132" text-anchor="middle" dominant-baseline="middle">continuation &#183; epoch 2 &#183; same id and seq</text>
+
+  <text class="s" x="308" y="172" dominant-baseline="middle">1 snapshot the text already shown</text>
+  <text class="s" x="308" y="190" dominant-baseline="middle">2 bump epoch 1 &#8594; 2</text>
+  <text class="s" x="308" y="208" dominant-baseline="middle">3 abort the upstream LLM request</text>
+  <text class="s" x="308" y="226" dominant-baseline="middle">4 stream only the new suffix</text>
+
+  <circle class="g" cx="330" cy="250" r="7"/>
+  <line class="e" x1="326" y1="246" x2="334" y2="254"/>
+  <line class="e" x1="334" y1="246" x2="326" y2="254"/>
+  <text class="s" x="344" y="250" dominant-baseline="middle">late epoch 1 token &#183; dropped</text>
+
+  <text class="t" x="16" y="286" dominant-baseline="middle">Liam</text>
+  <text class="s" x="16" y="304" dominant-baseline="middle">not targeted</text>
+  <rect class="n" x="96" y="272" width="624" height="36" rx="6"/>
+  <text x="408" y="290" text-anchor="middle" dominant-baseline="middle">streaming &#183; untouched</text>
+</svg>

@@ -4,6 +4,8 @@ import { EFFORT_MAX_TOKENS } from '../src/server/agents.js';
 import {
   createLLMProvider,
   ScriptableMockLLMProvider,
+  type LLMConfig,
+  type LLMProvider,
 } from '../src/server/llm.js';
 import {
   applyAsymmetricDedup,
@@ -27,6 +29,60 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
 
   afterEach(() => {
     store.close();
+  });
+
+  describe('Co-speaker question follow-up', () => {
+    function routerReturning(response: unknown): TurnRouter {
+      const llm: LLMProvider = {
+        config: { provider: 'openai', apiKey: 'stub', model: 'stub' } as LLMConfig,
+        async *streamChat() {},
+        completeJSON: async <T>() => response as T,
+      };
+      return new TurnRouter(llm);
+    }
+
+    function seedParallelWave() {
+      return [
+        store.reserveMessage({ role: 'user', content: 'When do we land on Day 1 and what should we get for dinner?' }),
+        store.reserveMessage({
+          role: 'agent',
+          agentId: 'maya',
+          content: 'Flight A lands at 11:00 AM and Flight B at 3:45 PM. @Liam, any dinner suggestions based on the flight?',
+          status: 'completed',
+        }),
+        store.reserveMessage({
+          role: 'agent',
+          agentId: 'liam',
+          content: 'For dinner, try okonomiyaki at Mizuno or Daruma.',
+          status: 'completed',
+        }),
+      ];
+    }
+
+    const silent = { effort: 'silent', thesis: '' };
+
+    it('lets a previous-wave speaker answer a question its parallel co-speaker asked it', async () => {
+      const plan = await routerReturning({
+        isResolved: false,
+        maya: silent,
+        liam: { effort: 'light', thesis: 'Tie dinner timing to each arrival', answersCoSpeaker: 'maya' },
+        zoe: silent,
+      }).routeWave({ waveIndex: 1, transcript: seedParallelWave(), previousWaveSpeakers: ['maya', 'liam'] });
+
+      expect(plan.isResolved).toBe(false);
+      expect(plan.speakers.map((s) => s.agentId)).toContain('liam');
+    });
+
+    it('still silences previous-wave speakers when the router does not flag a co-speaker question', async () => {
+      const plan = await routerReturning({
+        isResolved: false,
+        maya: silent,
+        liam: { effort: 'light', thesis: 'Tie dinner timing to each arrival' },
+        zoe: silent,
+      }).routeWave({ waveIndex: 1, transcript: seedParallelWave(), previousWaveSpeakers: ['maya', 'liam'] });
+
+      expect(plan.speakers.map((s) => s.agentId)).not.toContain('liam');
+    });
   });
 
   describe('1. Silence / Non-Repetition Gate & Asymmetric Priority', () => {
@@ -158,14 +214,12 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
       const mayaSysPrompt = mockLLM.streamCalls[0].messages[0].content;
       const liamSysPrompt = mockLLM.streamCalls[1].messages[0].content;
 
-      expect(mayaSysPrompt).not.toContain('Asymmetric Anti-Repetition Notice');
-      expect(liamSysPrompt).toContain('Asymmetric Anti-Repetition Notice');
+      expect(mayaSysPrompt).not.toContain('is covering:');
+      expect(liamSysPrompt).toContain('Teammates Answering Alongside You');
       expect(liamSysPrompt).toContain(
         'Maya is covering: Cover Flight B $820 price and Ryokan Gion 6:00 PM check-in cutoff',
       );
-      expect(liamSysPrompt).toContain(
-        'Do not list, summarize, or repeat options or prices from your peers’ domains',
-      );
+      expect(liamSysPrompt).toContain("Don't list, recap, or re-explain options, prices, or facts from");
     });
 
     it('silences generic duplicate recap theses on summary questions while keeping distinct domain conflict theses', () => {
@@ -233,15 +287,13 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
 
       const [mayaCall, liamCall, zoeCall] = mockLLM.streamCalls;
       expect(mayaCall.maxTokens).toBe(EFFORT_MAX_TOKENS.light); // 80
-      expect(mayaCall.messages[0].content).toContain(
-        'Keep your response to 1 short, crisp sentence',
-      );
+      expect(mayaCall.messages[0].content).toContain('One short sentence');
 
       expect(liamCall.maxTokens).toBe(EFFORT_MAX_TOKENS.standard); // 250
-      expect(liamCall.messages[0].content).toContain('2 to 4 clear sentences');
+      expect(liamCall.messages[0].content).toContain('2 to 4 sentences');
 
       expect(zoeCall.maxTokens).toBe(EFFORT_MAX_TOKENS.deep); // 600
-      expect(zoeCall.messages[0].content).toContain('thorough, well-structured breakdown');
+      expect(zoeCall.messages[0].content).toContain('A thorough breakdown');
     });
   });
 
@@ -338,6 +390,46 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
           ['agentId', 'agentName', 'content', 'createdAt', 'id', 'role', 'seq', 'status'].sort(),
         );
       }
+    });
+
+    it('starts a router-declared dependent speaker after its dependency finishes, with that answer in its history', async () => {
+      const orchestrator = new GroupChatOrchestrator({ store, llm: mockLLM });
+      const sseEvents: OrchestratorSSEEvent[] = [];
+      orchestrator.onEvent((ev) => sseEvents.push(ev));
+
+      mockLLM.enqueueJSON({
+        response: {
+          maya: { effort: 'standard', thesis: 'Share Day 1 arrival options', dependsOn: null },
+          liam: { effort: 'standard', thesis: 'Recommend first-night dinner', dependsOn: 'maya' },
+          zoe: { effort: 'standard', thesis: 'Note 7:30 AM wakeup rule', dependsOn: null },
+        },
+      });
+      mockLLM.enqueueStream({ match: /You are Maya/, chunks: ['Flight A lands at 11:00 AM.'], delayMs: 10 });
+      mockLLM.enqueueStream({ match: /You are Liam/, chunks: ['With an 11:00 AM landing, try Mizuno.'] });
+      mockLLM.enqueueStream({ match: /You are Zoe/, chunks: ['No wake-ups before 7:30 AM.'], delayMs: 10 });
+      mockLLM.enqueueJSON({
+        response: {
+          isResolved: true,
+          maya: { effort: 'silent', thesis: '' },
+          liam: { effort: 'silent', thesis: '' },
+          zoe: { effort: 'silent', thesis: '' },
+        },
+      });
+
+      await orchestrator.handleUserMessage('When do we land on Day 1 and where should we eat?');
+
+      const createdSeqs = sseEvents
+        .filter((e): e is Extract<OrchestratorSSEEvent, { type: 'message.created' }> => e.type === 'message.created')
+        .map((e) => e.message.agentId);
+      expect(createdSeqs).toEqual([null, 'maya', 'liam', 'zoe']);
+
+      const startOrder = mockLLM.streamCalls.map((c) => c.messages[0].content.match(/You are (\w+)/)![1]);
+      expect(startOrder.indexOf('Liam')).toBeGreaterThan(startOrder.indexOf('Maya'));
+      expect(startOrder.indexOf('Zoe')).toBeLessThan(startOrder.indexOf('Liam'));
+
+      const liamCall = mockLLM.streamCalls.find((c) => /You are Liam/.test(c.messages[0].content))!;
+      expect(liamCall.messages.some((m) => m.content === '[Maya]: Flight A lands at 11:00 AM.')).toBe(true);
+      expect(liamCall.messages[0].content).not.toMatch(/Co-Speakers Active Right Now[\s\S]*Maya/);
     });
   });
 
@@ -441,17 +533,20 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
       expect(historyText).toContain('[Liam]: Clearing KIX customs');
     });
 
-    it('enforces the MAX_A2A_WAVES = 3 safety ceiling and marks the final wave with isFinalWave', async () => {
+    it('enforces the MAX_A2A_WAVES safety ceiling and marks the final wave with isFinalWave', async () => {
       const orchestrator = new GroupChatOrchestrator({ store, llm: mockLLM });
 
-      // Queue 4 waves (Wave 0 + 3 follow-up waves) where Maya and Liam alternate back-and-forth
+      // Queue Wave 0 + every follow-up wave, with Maya and Liam alternating back-and-forth
       // with distinct cross-agent points while isResolved stays false
       const distinctWaveTheses = [
         { maya: 'Propose Flight B ($820) landing at 3:45 PM', liam: '' },
         { maya: '', liam: 'Note KIX customs and transit to Gion takes 2 hours 15 minutes' },
         { maya: 'Pivot lodging to Hotel Granvia ($290/night, 24h check-in)', liam: '' },
         { maya: '', liam: 'Confirm Haruka Express arrives directly inside Kyoto Station' },
+        { maya: 'Compare JR Pass cost against single Haruka tickets', liam: '' },
+        { maya: '', liam: 'Map the walk from Kyoto Station to Hotel Granvia lobby' },
       ];
+      expect(distinctWaveTheses).toHaveLength(MAX_A2A_WAVES + 1);
 
       for (let w = 0; w <= MAX_A2A_WAVES; w++) {
         const step = distinctWaveTheses[w];
@@ -475,15 +570,15 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
 
       const res = await orchestrator.handleUserMessage('Keep debating.');
 
-      // Wave 0 + 3 follow-up waves = 4 waves total, then stops at safety ceiling
+      // Wave 0 + MAX_A2A_WAVES follow-up waves, then stops at safety ceiling
       expect(res.wavePlans).toHaveLength(MAX_A2A_WAVES + 1);
       expect(res.agentMessages).toHaveLength(MAX_A2A_WAVES + 1);
 
-      // The final wave (Wave 3) must include the Final Synthesis Wave wrap-up instruction
+      // The final wave must include the Final Wrap-Up instruction
       const finalWaveSystemPrompt =
         mockLLM.streamCalls[MAX_A2A_WAVES].messages[0].content;
-      expect(finalWaveSystemPrompt).toContain('## Final Synthesis Wave');
-      expect(finalWaveSystemPrompt).toContain('do not ask further open questions');
+      expect(finalWaveSystemPrompt).toContain('## Final Wrap-Up');
+      expect(finalWaveSystemPrompt).toContain("Don't ask teammates questions");
     });
 
     it('prevents consecutive self-replies and self-repetition when an agent was the sole speaker in the previous wave', async () => {

@@ -14,6 +14,10 @@ import { ScriptableMockLLMProvider, type LLMProvider } from './llm.js';
 export interface AgentRouteDecision {
   effort: EffortLevel;
   thesis: string;
+  /** A same-wave speaker whose finished answer this agent must see before it starts streaming. */
+  dependsOn?: AgentId | null;
+  /** Follow-up waves: the previous-wave co-speaker whose question to this agent it is answering. */
+  answersCoSpeaker?: AgentId | null;
 }
 
 export interface ExtractedStandingRule {
@@ -39,6 +43,7 @@ export interface SpeakerPlan {
   thesis: string;
   peerTheses: string[];
   priorSpeakerTheses: Array<{ agentId: AgentId; thesis: string }>;
+  dependsOn?: AgentId;
 }
 
 export interface WaveRoutingPlan {
@@ -56,6 +61,8 @@ export interface RouteWaveInput {
   transcript: MessageRow[];
   activeRules?: StandingRuleRow[];
   latestUserMessage?: string;
+  /** Seq of the user message that opened this turn; mid-stream steering messages don't start a new turn. */
+  turnUserMessageSeq?: number;
   previousWaveSpeakers?: AgentId[];
   turnThesesByAgent?: Partial<Record<AgentId, string[]>>;
   runtimeConfig?: CustomAgentRuntimeConfig;
@@ -120,14 +127,6 @@ const CASUAL_SOCIAL_TURN_RE =
 
 export function isCasualSocialMessage(text: string): boolean {
   return CASUAL_SOCIAL_TURN_RE.test(text.trim());
-}
-
-export function isUserBookingConfirmationMessage(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.includes('?')) return false;
-  return /^(?:yes|yep|yeah|ok|okay|sure|sounds\s+good|let'?s\s+do\s+(?:that|it)|let'?s\s+book\s+(?:that|it)|go\s+ahead|agreed|confirm(?:ed)?)\b/i.test(
-    trimmed,
-  );
 }
 
 const FOLLOW_UP_VERIFICATION_CUE_RE =
@@ -195,6 +194,14 @@ export function getDomainSafeThesisFallback(
   const profile = getAgentProfile(agentId, runtimeConfig);
   const topics = getAgentVaultTopicSummary(agentId, runtimeConfig);
   return `Share ONLY the relevant facts and constraints for ${profile.roleTitle} (${topics}) from your private vault.`;
+}
+
+export function getConstraintCheckThesis(
+  agentId: AgentId,
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): string {
+  const topics = getAgentVaultTopicSummary(agentId, runtimeConfig);
+  return `Check the options and schedules your teammates just proposed against the constraints in your private vault (${topics}). Say which ones work and which don't, naming the constraint each time. Only flag a conflict a constraint actually covers; never stretch a rule to fit an option it doesn't apply to.`;
 }
 
 // Detects when the LLM router invents specific fake prices, hours, or clock times inside a thesis
@@ -355,6 +362,53 @@ export function extractMentionedAgents(
   matches.sort((a, b) => a.index - b.index);
   return matches.map((m) => m.agentId);
 }
+
+const VETO_CUE_RE =
+  /\b(?:avoid|veto(?:ed)?|unsafe|not\s+suitable|isn't\s+suitable|cannot|can't|won't\s+work|violates?|forfeits?|rules?\s+out|conflicts?\s+with|breaks?|different\s+\w+\s+option|alternative)\b/i;
+
+const RESOLUTION_CUE_RE =
+  /\b(?:works|agree|you're\s+right|exactly|go\s+with|opt\s+for|stick\s+with|recommend|(?:is|sounds\s+like|seems\s+like|looks\s+like)\s+(?:\w+ly\s+|indeed\s+)?(?:a\s+|the\s+)?(?:better|safer|good|right|best)\s+(?:choice|option|fit|bet|call|plan))\b/i;
+
+const ALTERNATIVE_OFFER_RE = /\b(?:instead|alternative|recommend|consider(?:ing)?|switch(?:ing)?\s+to)\b/i;
+
+function hasAlreadyOfferedAlternatives(messages: string[]): boolean {
+  return messages.some(
+    (msg) =>
+      /\b1[.)]\s+[\s\S]*\b2[.)]\s+/.test(msg) ||
+      (msg.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2 ||
+      ALTERNATIVE_OFFER_RE.test(msg),
+  );
+}
+
+function asksAgentDirectly(content: string, agentId: AgentId, runtimeConfig?: CustomAgentRuntimeConfig): boolean {
+  return content
+    .split(/(?<=[.!?])\s+|\r?\n/)
+    .some((sentence) => sentence.includes('?') && extractMentionedAgents(sentence, runtimeConfig).includes(agentId));
+}
+
+/**
+ * A peer's message earns `agentId` another turn only if it names them and either asks them something
+ * or vetoes their option when they haven't offered an alternative and the peer didn't settle on one.
+ */
+function peerMessageNeedsReplyFrom(
+  content: string,
+  agentId: AgentId,
+  agentPriorMsgs: string[],
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): boolean {
+  if (!extractMentionedAgents(content, runtimeConfig).includes(agentId)) return false;
+  if (asksAgentDirectly(content, agentId, runtimeConfig)) return true;
+  return (
+    agentPriorMsgs.length > 0 &&
+    !hasAlreadyOfferedAlternatives(agentPriorMsgs) &&
+    VETO_CUE_RE.test(content) &&
+    !RESOLUTION_CUE_RE.test(content)
+  );
+}
+
+// The LLM sometimes reads "wrap up in one sentence" as stop; a stop must actually ask to stop.
+const STOP_INTENT_RE =
+  /\b(?:stop|halt|cancel|abort|pause|quiet|shut\s+up|enough|never\s*mind|nevermind|forget\s+it|hold\s+on|that'?s\s+all)\b/i;
 
 export function isExplicitStopCommand(text: string): boolean {
   const cleaned = text.trim().toLowerCase().replace(/[.!?]+$/g, '').trim();
@@ -647,10 +701,28 @@ function normalizeAgentDecision(raw?: Partial<AgentRouteDecision>): AgentRouteDe
   if (effort === 'silent') {
     return { effort: 'silent', thesis: '' };
   }
+  const dependsOn = AGENT_IDS.find((id) => id === raw?.dependsOn);
+  const answersCoSpeaker = AGENT_IDS.find((id) => id === raw?.answersCoSpeaker);
   return {
     effort,
     thesis: thesis || 'Provide relevant domain facts from private vault.',
+    ...(dependsOn ? { dependsOn } : {}),
+    ...(answersCoSpeaker ? { answersCoSpeaker } : {}),
   };
+}
+
+/** Keeps only dependencies on another speaker in the same wave that is itself independent. */
+function resolveSpeakerDependencies(
+  speakers: SpeakerPlan[],
+  decisions: Record<AgentId, AgentRouteDecision>,
+): void {
+  const speakerIds = new Set(speakers.map((s) => s.agentId));
+  for (const speaker of speakers) {
+    const target = decisions[speaker.agentId].dependsOn;
+    if (target && target !== speaker.agentId && speakerIds.has(target) && !decisions[target].dependsOn) {
+      speaker.dependsOn = target;
+    }
+  }
 }
 
 function normalizeStandingRule(raw?: ExtractedStandingRule | null): ExtractedStandingRule | null {
@@ -681,7 +753,15 @@ function formatTranscriptForRouter(
     .join('\n');
 }
 
-function getCurrentTurnAgentMessages(transcript: MessageRow[]): MessageRow[] {
+function getCurrentTurnAgentMessages(
+  transcript: MessageRow[],
+  turnUserMessageSeq?: number,
+): MessageRow[] {
+  if (turnUserMessageSeq !== undefined) {
+    return transcript.filter(
+      (m) => m.seq > turnUserMessageSeq && m.role === 'agent' && Boolean(m.agent_id),
+    );
+  }
   let lastUserIdx = -1;
   for (let i = transcript.length - 1; i >= 0; i--) {
     if (transcript[i].role === 'user') {
@@ -692,6 +772,52 @@ function getCurrentTurnAgentMessages(transcript: MessageRow[]): MessageRow[] {
   return lastUserIdx >= 0
     ? transcript.slice(lastUserIdx + 1).filter((m) => m.role === 'agent' && Boolean(m.agent_id))
     : transcript.filter((m) => m.role === 'agent' && Boolean(m.agent_id));
+}
+
+const DEPENDS_ON_RULE = `"dependsOn":
+   - Speaking agents stream in parallel and cannot see each other's answers. If one speaking agent's answer genuinely needs facts another speaking agent will state in this round, set its "dependsOn" to that agent's id so it waits and builds on that answer. Otherwise null, so independent answers stay parallel.
+   - Direction matters: facts flow from the agent who owns the INPUT to the agent whose answer is CONDITIONAL on it. The waiting agent is the one that would otherwise have to say "it depends on…" or ask the other agent. Example: for "when is it ready and what should we plan right after?", the follow-up plan is conditional on the ready time, so the owner of the follow-up depends on the owner of that time — never the reverse.
+   - Feasibility questions ("does X fit before Y?", "can we make it in time?", "will it finish by the deadline?") need a start time or deadline from one agent and a duration from another. The agent who owns the deadline or cutoff gives the verdict, so it depends on the agent who owns the duration; otherwise it would have to guess whether the plan fits.
+   - Keep each speaker's thesis to the part of the question their own domain owns, so the input owner does not also plan the downstream part.
+   - Never let two agents depend on each other, and never chain dependencies.`;
+
+const STEERING_DRAFT_PREVIEW_CHARS = 300;
+
+function buildSteeringContext(
+  transcript: MessageRow[],
+  activeAgents: AgentId[],
+  currentUserMessage: string,
+): string {
+  const priorUserMessages = transcript.filter(
+    (m) => m.role === 'user' && m.content.trim() !== currentUserMessage,
+  );
+  const previousQuestion = priorUserMessages[priorUserMessages.length - 1]?.content.trim();
+
+  const latestDraftByAgent = new Map<AgentId, string>();
+  for (const m of transcript) {
+    if (m.role === 'agent' && m.status === 'streaming' && m.agent_id && activeAgents.includes(m.agent_id)) {
+      latestDraftByAgent.set(m.agent_id, m.content);
+    }
+  }
+  const draftLines = Array.from(latestDraftByAgent.entries())
+    .filter(([, content]) => content.trim())
+    .map(([agentId, content]) => {
+      const flat = content.replace(/\s+/g, ' ').trim();
+      const preview =
+        flat.length > STEERING_DRAFT_PREVIEW_CHARS
+          ? `${flat.slice(0, STEERING_DRAFT_PREVIEW_CHARS)}…`
+          : flat;
+      return `- ${agentId}: "${preview}"`;
+    });
+
+  const parts: string[] = [];
+  if (previousQuestion) {
+    parts.push(`The question they're answering: "${previousQuestion}"`);
+  }
+  if (draftLines.length > 0) {
+    parts.push(`What each streaming agent has written so far:\n${draftLines.join('\n')}`);
+  }
+  return parts.join('\n');
 }
 
 function buildAgentDomainDirectoryForRouter(runtimeConfig?: CustomAgentRuntimeConfig): string {
@@ -726,6 +852,8 @@ export class TurnRouter {
 
     const fallback = classifySteeringDeterministic(trimmed, activeAgents);
     const agentDirectory = buildAgentDomainDirectoryForRouter(runtimeConfig);
+    const mayaName = getAgentProfile('maya', runtimeConfig).name;
+    const liamName = getAgentProfile('liam', runtimeConfig).name;
     const formattedRulesWithIds =
       activeRules.length > 0
         ? activeRules
@@ -733,24 +861,25 @@ export class TurnRouter {
             .join('\n')
         : '(None)';
 
-    const systemPrompt = `You are the In-Flight Steering Classifier for a real-time multi-agent group chat with:
-${agentDirectory}
+    const steeringContext = buildSteeringContext(input.transcript ?? [], activeAgents, trimmed);
 
-Currently streaming agents: ${JSON.stringify(activeAgents)}
-Active Standing Rules:
+    const systemPrompt = `You classify a message the user sent while agents in a group chat were still writing their replies.
+
+Agents:
+${agentDirectory}
+${steeringContext ? `\n${steeringContext}\n` : ''}
+Active standing rules:
 ${formattedRulesWithIds}
 
-The user just sent a message while the above agents are actively streaming. Classify the user's intent:
+Return JSON with these fields:
 1. "action":
-   - "stop_all": User wants everyone to stop/cancel/be quiet immediately.
-   - "steer": User is redirecting, refining, constraining, or addressing one or more agents mid-stream (e.g. changing currency/format/length, asking an agent to focus on something else, or calling in an agent).
-   - "new_turn": User is changing to a completely unrelated topic that requires abandoning the current turn and starting fresh. (Prefer "steer" whenever redirecting current answers or addressing an agent.)
-2. "targetAgents":
-   - If the user names or references specific agent(s) by name or role (e.g. "Maya", "@Liam", "budget person"), return ONLY those targeted agent IDs (e.g. ["maya"]).
-   - If the redirect is global (no specific agent named, e.g. "Keep it to 1 sentence", "Use bullet points"), return all currently streaming agents: ${JSON.stringify(activeAgents)}.
-3. "directive": Clean 1-line instruction for the targeted agent(s) to follow as they seamlessly update and complete their in-flight message.
-4. "removeRuleIds": Inspect Active Standing Rules against the user's message. If the user asks to stop, drop, forget, relax, or override any specific existing rule(s) (e.g. "nevermind riddles are hard to read, talk normally", "stop using haikus", "no more [BUDGET-OK]", or gives a new rule that contradicts a specific old rule), return the exact "id" strings of ONLY those superseded/canceled rules in "removeRuleIds": ["..."] while leaving unrelated active rules untouched! Otherwise return [].
-5. "standingRule": ONLY if the user's NEW message establishes a new persistent instruction for future turns, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": "<concise imperative rule ONLY, excluding any follow-up question>" }, else null. NEVER copy an existing rule from Active Standing Rules!
+   - "stop_all": the user wants everyone to stop writing and says nothing about what the replies should still contain.
+   - "steer": the user is adjusting the replies in progress (currency, format, length, focus) or addressing an agent, including calling in one who isn't writing yet. Prefer this whenever the message relates to the replies in progress. A message about how to finish ("wrap up in one sentence", "finish quickly", "conclude now", "just give the bottom line") is a steer, not a stop: the replies must still end the way the user asked.
+   - "new_turn": the user has moved on to a different question, so the replies in progress should be abandoned.
+2. "targetAgents": the agents the message is aimed at, by name or role (e.g. "${mayaName}", "@${liamName}", or a role like "the budget person"). If it's aimed at everyone, return all streaming agents: ${JSON.stringify(activeAgents)}.
+3. "directive": one line telling the targeted agents what to change, written to them in second person and keeping the user's specifics (e.g. "Quote all prices in euros.", "Keep your answer to one sentence."). Don't include agent names.
+4. "removeRuleIds": ids of active rules the user cancels or contradicts (e.g. "talk normally" cancels a haiku rule; "no more [OK] tag" cancels that tag). Leave unrelated rules alone. Otherwise [].
+5. "standingRule": only if the user signals the instruction should outlast this reply ("always", "from now on", "going forward", "all prices"), return { "scope": the named agent's id or "global", "rule": a short imperative }. A one-off change like "make this shorter" is not a standing rule. Never repeat an existing active rule. Otherwise null.
 
 Return strict JSON:
 {
@@ -782,6 +911,10 @@ Return strict JSON:
       const raw = await this.llm.completeJSON<RawSteeringLLMResponse>(completeOptions);
       if (!raw || typeof raw !== 'object' || !raw.action || !VALID_STEERING_ACTIONS.has(raw.action)) {
         return fallback;
+      }
+
+      if (raw.action === 'stop_all' && !STOP_INTENT_RE.test(trimmed)) {
+        raw.action = 'steer';
       }
 
       if (raw.action === 'stop_all') {
@@ -864,6 +997,7 @@ Return strict JSON:
       transcript,
       activeRules = [],
       latestUserMessage,
+      turnUserMessageSeq,
       previousWaveSpeakers,
       turnThesesByAgent = {},
       signal,
@@ -872,37 +1006,11 @@ Return strict JSON:
     const isFollowUpWave = waveIndex > 0;
     const isMock = this.llm instanceof ScriptableMockLLMProvider;
 
-    let lastUserMessageContent = latestUserMessage ?? '';
-    for (let i = transcript.length - 1; i >= 0; i--) {
-      if (transcript[i].role === 'user') {
-        lastUserMessageContent = transcript[i].content;
-        break;
-      }
-    }
-
-    if (
-      isFollowUpWave &&
-      !isMock &&
-      (isCasualSocialMessage(lastUserMessageContent) ||
-        isGeneralRecapQuery(lastUserMessageContent) ||
-        isStandaloneStandingRuleMessage(lastUserMessageContent) ||
-        isUserBookingConfirmationMessage(lastUserMessageContent) ||
-        isFollowUpVerificationOnDiscussedTopics(lastUserMessageContent, transcript, runtimeConfig))
-    ) {
-      return {
-        waveIndex,
-        isResolved: true,
-        decisions: {
-          maya: { effort: 'silent', thesis: '' },
-          liam: { effort: 'silent', thesis: '' },
-          zoe: { effort: 'silent', thesis: '' },
-        },
-        speakers: [],
-        standingRule: null,
-        removeRuleIds: [],
-        clearRuleScope: null,
-      };
-    }
+    const turnUserMessage =
+      turnUserMessageSeq !== undefined
+        ? transcript.find((m) => m.seq === turnUserMessageSeq && m.role === 'user')
+        : [...transcript].reverse().find((m) => m.role === 'user');
+    const lastUserMessageContent = turnUserMessage?.content ?? latestUserMessage ?? '';
 
     const rulesSummary =
       activeRules.length > 0
@@ -911,7 +1019,7 @@ Return strict JSON:
             .join('\n')
         : '(None)';
 
-    const currentTurnAgentMsgs = getCurrentTurnAgentMessages(transcript);
+    const currentTurnAgentMsgs = getCurrentTurnAgentMessages(transcript, turnUserMessageSeq);
     const inferredPrevSpeakers: AgentId[] =
       previousWaveSpeakers ??
       (currentTurnAgentMsgs.length > 0 && currentTurnAgentMsgs[currentTurnAgentMsgs.length - 1].agent_id
@@ -919,64 +1027,67 @@ Return strict JSON:
         : []);
 
     const agentDirectory = buildAgentDomainDirectoryForRouter(runtimeConfig);
+    const mayaName = getAgentProfile('maya', runtimeConfig).name;
+    const zoeName = getAgentProfile('zoe', runtimeConfig).name;
 
     const systemPrompt = isFollowUpWave
-      ? `You are the A2A Follow-Up Wave Router for a 3-agent collaborative group chat.
-Each agent has an isolated private knowledge vault for their own domain:
+      ? `You decide whether anyone should follow up after the last round of replies in a group chat, and if so who and how much. Agents reply in parallel and can't see each other's replies until they're posted.
+
+Agents (each has a private vault you can't see; you only see its section names):
 ${agentDirectory}
 
-Agents who just spoke in Wave ${waveIndex - 1}: ${JSON.stringify(inferredPrevSpeakers)}
+Agents who spoke in the last round: ${JSON.stringify(inferredPrevSpeakers)}
 
-CRITICAL RULES FOR A2A FOLLOW-UP WAVES:
-1. NEVER allow an agent who just spoke in Wave ${waveIndex - 1} (${JSON.stringify(inferredPrevSpeakers)}) to speak again in Wave ${waveIndex}! An agent must NEVER reply to itself or speak in two consecutive waves.
-2. NEVER schedule an agent just to say "I don't have that information, check directly with the venue/provider." If the previous speaker already answered the user's question (or noted what is in the vaults), set "isResolved": true and all agents to "silent"!
-3. MANDATORY CROSS-DOMAIN CHECKS — An agent who was SILENT in Wave ${waveIndex - 1} MUST speak in Wave ${waveIndex} (with "isResolved": false) ONLY if a speaker in Wave ${waveIndex - 1}:
-   (a) directly asked them a question by name ("@Maya", "@Liam", "@Zoe") that they actually have facts for in their domain, OR
-   (b) proposed a concrete option, schedule, timing, or activity where THIS silent peer agent's domain (listed above) contains constraints, feasibility timings, or restrictions that have NOT been checked yet in the current turn!
-4. Write each speaking agent's "thesis" as a short 5-10 word high-level topic label for THEIR domain only. NEVER invent or include specific numbers, prices, currencies, or clock times in a thesis!
-5. Once all relevant cross-agent domain checks for the user's question have been surfaced, set "isResolved": true and all agents to "silent".
+Rules:
+1. First, judge the user's latest message (quoted at the end of the input) by its intent, not its opening word. Open items or next steps listed in an agent's reply don't change this.
+   - If it only greets, thanks, acknowledges, commits to an option already discussed, or sets a style rule, and the first round handled it, the exchange is resolved.
+   - If it asks for a recap, status, or confirmation of facts already in the chat, it's resolved, unless the recapped plan conflicts with a constraint in a silent agent's domain that no message in the whole conversation has raised (e.g. the plan includes an option that breaks a personal, safety, or compliance rule only that agent knows about). Then schedule only that agent at "light" effort to flag that one conflict without restating the plan.
+   - If it asks for something new (e.g. "ok, let's look at our other options"), apply rules 2 and 3.
+2. Agents who spoke in the last round stay silent this round, so nobody replies to themselves. One exception: if a last-round speaker @asked another last-round speaker something that agent's own message didn't already answer (they couldn't see each other), schedule the asked agent with "answersCoSpeaker" set to the asker's id and a thesis to answer that question using the asker's facts. Otherwise "answersCoSpeaker" is null.
+3. Any other agent speaks only if a last-round speaker:
+   (a) @asked them something their domain covers,
+   (b) proposed an option, schedule, or activity that their domain's constraints haven't been checked against yet this turn, or
+   (c) raised a problem with an option this agent proposed earlier in the turn, so it can offer an alternative.
+4. Set "isResolved": true and every agent to "silent" once the user's question is answered and every relevant cross-domain check has been made. Never schedule an agent just to say it doesn't have the information.
+5. "thesis": 5–10 words naming what that agent will cover, within its own domain. Teammates see it and avoid repeating it, so make it specific. Don't include numbers, prices, or times: you can't see the vaults, so any figure would be a guess.
+6. "effort": follow-ups are usually "light" or "standard"; use "deep" only if the user asked for a full breakdown.
+7. ${DEPENDS_ON_RULE}
 
 Return strict JSON:
 {
   "isResolved": boolean,
-  "maya": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
-  "liam": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
-  "zoe": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string }
+  "maya": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string, "dependsOn": "liam" | "zoe" | null, "answersCoSpeaker": "liam" | "zoe" | null },
+  "liam": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string, "dependsOn": "maya" | "zoe" | null, "answersCoSpeaker": "maya" | "zoe" | null },
+  "zoe": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string, "dependsOn": "maya" | "liam" | null, "answersCoSpeaker": "maya" | "liam" | null }
 }`
-      : `You are the Pre-Response Effort & Non-Repetition Router for a 3-agent collaborative group chat.
-Each agent has an isolated private knowledge vault for their own domain:
+      : `You decide which agents reply to the user's latest message in a group chat, and how much each says. Agents reply in parallel and can't see each other's replies until they're posted.
+
+Agents (each has a private vault you can't see; you only see its section names):
 ${agentDirectory}
 
-Rules for routing Wave 0:
-1. Silence Gate & Domain Matching:
-   - Match the user's actual question to the agent whose domain owns that question, even if the user refers to an item from the previous turn! (For example: if the user asks about budget, bankroll, or how much something costs, you MUST assign Maya and keep non-budget agents "silent" if they have no new domain facts to add; if the user asks whether an arrival time makes a check-in cutoff across locations, assign BOTH the lodging/cutoff owner Maya AND the transit-timing owner Liam!)
-   - If the user explicitly addresses specific agent(s) by name (e.g. "@Maya ..."), ONLY the addressed agent(s) may speak in Wave 0—all non-addressed agents MUST be "silent".
-   - At least ONE agent MUST speak in Wave 0 on every user message! For casual greetings ("hey team!") or thanks ("thanks!"), assign "light" effort with thesis "Reply with a warm 1-sentence greeting/acknowledgment".
-2. Strict Domain Partition & Sequential Cross-Domain Synthesis (NO Fake Numbers in Thesis):
-   - Every speaking agent's "thesis" MUST be a short 5-10 word high-level topic directive strictly confined to their own domain. NEVER invent or include specific prices, amounts, hours, or clock times inside the "thesis" string!
-   - Let Proposal Agents Speak First Before Constraint Agents:
-     * When the user asks to choose/recommend options (e.g. "what is the best option?") and the options haven't been listed in the chat yet, have the option-owning agent(s) speak in Wave 0 so the constraint-checking agent (e.g. Zoe) can evaluate the actual concrete options in Wave 1!
-     * When the user asks about multiple domains in one prompt (e.g. Maya's options AND Liam's options), assign both Maya ("standard") and Liam ("standard") in Wave 0 so Zoe can evaluate both in Wave 1!
-   - For general recap/status questions (e.g., "what's our plan so far and what do we need to decide?"):
-     * Assign ONE primary summarizer (Maya) to summarize the status and pending decisions; keep other agents "silent" unless they are flagging a specific unaddressed constraint.
-3. Effort Calibration:
-   - "light": Simple single-fact check, greeting, or quick 1-sentence note.
-   - "standard": Moderate multi-fact answer or domain breakdown (2–4 sentences).
-   - "deep": Thorough analysis or complete breakdown.
-4. Standing Rule Lifecycle ("removeRuleIds" & "standingRule"):
-   - "removeRuleIds": Inspect Active Standing Rules against the user's latest message. If the user asks to stop, drop, forget, relax, or override any specific existing rule(s) (e.g. "nevermind riddles are hard to read, talk normally", "stop using haikus", "Maya, stop ending messages with [BUDGET-OK]", or gives a new rule that contradicts a specific old rule), return the exact "id" strings of ONLY those superseded/canceled rules in "removeRuleIds": ["..."] while leaving unrelated active rules untouched! Otherwise return [].
-   - "standingRule": ONLY if the user's latest message establishes a NEW persistent formatting/style/currency instruction for how agents should respond in future turns, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": "<concise imperative rule ONLY, excluding any follow-up question>" }, otherwise null. (Note: if the user merely says "talk normally" or "answer in 1 normal sentence" to cancel a previous haiku/riddle rule, put the old rule's id in "removeRuleIds" and set "standingRule": null!). NEVER copy or re-emit an existing rule from Active Standing Rules!
+Rules:
+1. Who speaks:
+   - Pick the agent(s) whose domain owns the question, even when it refers back to an earlier turn. Keep agents silent if they have nothing new to add from their domain. (E.g. a cost question goes to the agent whose domain covers budget; "can we finish this before that deadline?" needs both the owner of the deadline and the owner of the duration.)
+   - If the user addresses agents by name ("@${mayaName} …"), only those agents speak.
+   - At least one agent speaks on every message. For greetings or thanks, one agent replies at "light" effort.
+   - When the user asks to choose between options that haven't been listed yet, have the agents who own those options speak now; constraint checks (by ${zoeName}) happen in the follow-up round once the options are on screen. If the question spans several option owners, schedule all of them.
+   - For a recap or status question, schedule one summarizer (${mayaName}) and keep others silent unless they need to flag a specific constraint nobody has raised.
+2. "thesis": 5–10 words naming what that agent will cover, within its own domain. Teammates see it and avoid repeating it, so make it specific. Don't include numbers, prices, or times: you can't see the vaults, so any figure would be a guess.
+3. "effort": "light" for a single fact, greeting, or quick note; "standard" for a few facts (2–4 sentences); "deep" only when the user asks for a breakdown, comparison, or full plan.
+4. "removeRuleIds": ids of active rules the user's message cancels or contradicts (e.g. "talk normally" cancels a haiku rule; "${mayaName}, stop ending with [OK]" cancels that tag). Leave unrelated rules alone. Otherwise [].
+5. "standingRule": only if the message sets how agents should respond from now on: words like "always", "from now on", "going forward", "all prices", or a message that's purely a style/format instruction (e.g. "answer in bullet points"). Return { "scope": the named agent's id or "global", "rule": a short imperative }. Cancelling an old rule ("talk normally") is not a new rule. Never repeat an active rule. Otherwise null.
+6. ${DEPENDS_ON_RULE}
 
 Return strict JSON:
 {
-  "maya": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
-  "liam": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
-  "zoe": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
+  "maya": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string, "dependsOn": "liam" | "zoe" | null },
+  "liam": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string, "dependsOn": "maya" | "zoe" | null },
+  "zoe": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string, "dependsOn": "maya" | "liam" | null },
   "removeRuleIds": string[],
   "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": string } | null
 }`;
 
-    const userPrompt = `Active Standing Rules:\n${rulesSummary}\n\nConversation Transcript:\n${formatTranscriptForRouter(transcript, runtimeConfig)}\n\nRoute Wave ${waveIndex} now.`;
+    const userPrompt = `Active Standing Rules:\n${rulesSummary}\n\nConversation Transcript:\n${formatTranscriptForRouter(transcript, runtimeConfig)}${isFollowUpWave ? `\n\nUser's latest message: ${JSON.stringify(lastUserMessageContent)}` : ''}\n\nRoute Wave ${waveIndex} now.`;
 
     const referenceText =
       latestUserMessage ??
@@ -1017,6 +1128,7 @@ Return strict JSON:
       liam: normalizeAgentDecision(raw?.liam ?? raw?.agents?.liam),
       zoe: normalizeAgentDecision(raw?.zoe ?? raw?.agents?.zoe),
     };
+    const llmDecisions = { ...rawDecisions };
 
     if (isFollowUpWave) {
       // Rule 1: No agent who just spoke in Wave N-1 can speak again in Wave N (zero consecutive self-replies)
@@ -1032,12 +1144,6 @@ Return strict JSON:
       const prevWaveMsgs = currentTurnAgentMsgs.filter((m) =>
         inferredPrevSpeakers.includes(m.agent_id!),
       );
-      const prevWaveCombinedText = prevWaveMsgs.map((m) => m.content).join('\n');
-      const prevWaveHasQuestionOrVeto =
-        /[?]|\b(?:avoid|veto(?:ed)?|unsafe|not\s+suitable|isn't\s+suitable|cannot|can't|won't\s+work|violates?|forfeits?|rules?\s+out|miss\s+the\s+check-?in)\b/i.test(
-          prevWaveCombinedText,
-        );
-
       for (const agentId of AGENT_IDS) {
         if (rawDecisions[agentId].effort === 'silent') continue;
 
@@ -1046,31 +1152,9 @@ Return strict JSON:
           .map((m) => m.content);
         const priorThesesForAgent = turnThesesByAgent[agentId] ?? [];
 
-        const wasTaggedWithQuestionOrVetoInPrevWave = prevWaveMsgs.some((m) => {
-          if (!extractMentionedAgents(m.content, runtimeConfig).includes(agentId)) {
-            return false;
-          }
-          // Check if the peer who tagged `agentId` asked a question (?) OR rejected an option that `agentId` proposed in Wave 0!
-          if (m.content.includes('?')) return true;
-          const agentPriorText = priorMsgsForAgent.join('\n').toLowerCase();
-          // If the Wave 0 speaker already listed 2+ options (so the alternative is already on screen!),
-          // they do NOT need to speak a second time unless the Wave 1 peer asked a direct question (`?`).
-          const alreadyListedMultipleOptions = priorMsgsForAgent.some(
-            (msg) =>
-              /\b1[.)]\s+[\s\S]*\b2[.)]\s+/.test(msg) ||
-              (msg.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2 ||
-              /\bFlight\s*A\b[\s\S]*\bFlight\s*B\b/i.test(msg),
-          );
-          if (alreadyListedMultipleOptions) {
-            return false;
-          }
-          return (
-            agentPriorText.length > 0 &&
-            /\b(?:avoid|veto(?:ed)?|unsafe|not\s+suitable|isn't\s+suitable|cannot|can't|won't\s+work|violates?|forfeits?|rules?\s+out|miss\s+the\s+check-?in|different\s+\w+\s+option|alternative)\b/i.test(
-              m.content,
-            )
-          );
-        });
+        const wasTaggedWithQuestionOrVetoInPrevWave = prevWaveMsgs.some((m) =>
+          peerMessageNeedsReplyFrom(m.content, agentId, priorMsgsForAgent, runtimeConfig),
+        );
 
         if (!isMock && priorMsgsForAgent.length > 0) {
           // Never allow an agent to speak a 3rd time in the same turn, and never allow
@@ -1080,23 +1164,7 @@ Return strict JSON:
             continue;
           }
 
-          const alreadyListedMultipleOptions = priorMsgsForAgent.some(
-            (msg) =>
-              /\b1[.)]\s+[\s\S]*\b2[.)]\s+/.test(msg) ||
-              (msg.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2 ||
-              /\bFlight\s*A\b[\s\S]*\bFlight\s*B\b/i.test(msg),
-          );
-          const isWave0SpeakerPivotingAfterPeer =
-            priorMsgsForAgent.length === 1 &&
-            !alreadyListedMultipleOptions &&
-            prevWaveHasQuestionOrVeto &&
-            inferredPrevSpeakers.some((id) => id !== agentId);
-          const isTaggedPeerReplyingToQuestionOrVeto =
-            wasTaggedWithQuestionOrVetoInPrevWave &&
-            priorMsgsForAgent.length === 1 &&
-            !inferredPrevSpeakers.includes(agentId);
-
-          if (!isWave0SpeakerPivotingAfterPeer && !isTaggedPeerReplyingToQuestionOrVeto) {
+          if (!wasTaggedWithQuestionOrVetoInPrevWave || inferredPrevSpeakers.includes(agentId)) {
             rawDecisions[agentId] = { effort: 'silent', thesis: '' };
             continue;
           }
@@ -1121,7 +1189,7 @@ Return strict JSON:
       // 2. If in Wave 2 (after Wave 1), a speaker in Wave 1 explicitly @mentioned a Wave 0 speaker
       //    AND asked a question (`?`) or vetoed the single option that speaker proposed (when that speaker
       //    hadn't already listed the alternative in Wave 0), allow that Wave 0 speaker to reply once in Wave 2!
-      if (!isMock) {
+      if (!isMock && !isGeneralRecapQuery(lastUserMessageContent)) {
         for (const msg of prevWaveMsgs) {
           const peerMentions = extractMentionedAgents(msg.content, runtimeConfig).filter(
             (id) => id !== msg.agent_id && !inferredPrevSpeakers.includes(id),
@@ -1131,18 +1199,12 @@ Return strict JSON:
               .filter((m) => m.agent_id === targetPeerId)
               .map((m) => m.content);
             const priorCount = targetPriorMsgs.length;
-            const targetAlreadyListedMultiple = targetPriorMsgs.some(
-              (mText) =>
-                /\b1[.)]\s+[\s\S]*\b2[.)]\s+/.test(mText) ||
-                (mText.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2 ||
-                /\bFlight\s*A\b[\s\S]*\bFlight\s*B\b/i.test(mText),
+            const peerAskedOrVetoedTarget = peerMessageNeedsReplyFrom(
+              msg.content,
+              targetPeerId,
+              targetPriorMsgs,
+              runtimeConfig,
             );
-            const peerAskedOrVetoedTarget =
-              msg.content.includes('?') ||
-              (!targetAlreadyListedMultiple &&
-                /\b(?:avoid|veto(?:ed)?|unsafe|not\s+suitable|isn't\s+suitable|cannot|can't|won't\s+work|violates?|forfeits?|rules?\s+out|miss\s+the\s+check-?in|different\s+\w+\s+option|alternative)\b/i.test(
-                  msg.content,
-                ));
 
             if (priorCount === 0 && rawDecisions[targetPeerId].effort === 'silent') {
               rawDecisions[targetPeerId] = {
@@ -1173,7 +1235,7 @@ Return strict JSON:
       // Whenever Wave 0 speakers presented multiple options/candidates (e.g. numbered list 1. / 2.,
       // multiple bolded options **...**, "vs", or a trade-off/comparison) OR proposed a concrete
       // schedule/option, and Zoe (the constraints/compliance/preferences specialist) has not spoken
-      // yet in the conversation, trigger Zoe in Wave 1 unless Wave 0 was a pure transit/cutoff math calculation!
+      // yet in the conversation, trigger Zoe in Wave 1 to check those proposals against her constraints.
       if (!isMock && waveIndex === 1) {
         const turnCombinedText = currentTurnAgentMsgs.map((m) => m.content).join('\n');
         const zoeSpokeInTurn = currentTurnAgentMsgs.some((m) => m.agent_id === 'zoe');
@@ -1187,28 +1249,60 @@ Return strict JSON:
           /\b(\d{1,2}:\d{2}\s*(?:AM|PM)|option\s+[ab12]|tier\s+[123]|cluster\s+\w+|vs\.?|versus|prefer|choose\s+between)\b/i.test(
             turnCombinedText,
           );
-        const isPureTransitCutoffMathOnly =
-          /\b(2\s*hours?\s*15|2h\s*15m)\b/i.test(turnCombinedText) &&
-          /\b6:00\s*PM\b/i.test(turnCombinedText) &&
-          !/\b(6:45\s*AM|Nishiki|shellfish|Shorai-an|vegetarian)\b/i.test(turnCombinedText);
-
         if (
           !zoeSpokeInTurn &&
           hasMultipleOptionsOrSchedule &&
-          !isPureTransitCutoffMathOnly &&
           !isGeneralRecapQuery(lastUserMessageContent)
         ) {
           if (rawDecisions.zoe.effort === 'silent' && !zoeSpokeEarlierInHistory) {
             rawDecisions.zoe = {
               effort: currentTurnAgentMsgs.length >= 2 ? 'standard' : 'light',
-              thesis: getDomainSafeThesisFallback('zoe', runtimeConfig),
+              thesis: getConstraintCheckThesis('zoe', runtimeConfig),
             };
             raw.isResolved = false;
           } else if (currentTurnAgentMsgs.length >= 2 && rawDecisions.zoe.effort === 'light') {
             rawDecisions.zoe.effort = 'standard';
           }
-        } else if (!zoeSpokeInTurn && isPureTransitCutoffMathOnly) {
-          rawDecisions.zoe = { effort: 'silent', thesis: '' };
+        }
+      }
+
+      // Exception to "no consecutive waves": parallel co-speakers could not see each other, so the
+      // router may let one answer a question its co-speaker asked it, once per turn.
+      for (const agentId of AGENT_IDS) {
+        const decision = llmDecisions[agentId];
+        const asker = decision.answersCoSpeaker;
+        const agentTurnMsgCount = currentTurnAgentMsgs.filter((m) => m.agent_id === agentId).length;
+        const askerReallyAsked =
+          isMock ||
+          prevWaveMsgs.some(
+            (m) => m.agent_id === asker && asksAgentDirectly(m.content, agentId, runtimeConfig),
+          );
+        if (
+          decision.effort !== 'silent' &&
+          asker &&
+          asker !== agentId &&
+          inferredPrevSpeakers.includes(agentId) &&
+          inferredPrevSpeakers.includes(asker) &&
+          agentTurnMsgCount === 1 &&
+          askerReallyAsked
+        ) {
+          rawDecisions[agentId] = decision;
+          raw.isResolved = false;
+        }
+      }
+
+      const repeatSpeakers = AGENT_IDS.filter(
+        (id) =>
+          rawDecisions[id].effort !== 'silent' && currentTurnAgentMsgs.some((m) => m.agent_id === id),
+      );
+      if (!isMock && repeatSpeakers.length > 1) {
+        const addressedFirst = extractMentionedAgents(
+          prevWaveMsgs.map((m) => m.content).join('\n'),
+          runtimeConfig,
+        ).find((id) => repeatSpeakers.includes(id));
+        const keep = addressedFirst ?? repeatSpeakers[0];
+        for (const id of repeatSpeakers) {
+          if (id !== keep) rawDecisions[id] = { effort: 'silent', thesis: '' };
         }
       }
     } else {
@@ -1420,6 +1514,7 @@ Return strict JSON:
       isMock,
       runtimeConfig,
     );
+    resolveSpeakerDependencies(speakers, rawDecisions);
 
     const isResolved = isFollowUpWave
       ? Boolean(raw?.isResolved) || speakers.length === 0

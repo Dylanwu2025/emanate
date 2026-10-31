@@ -1,0 +1,25 @@
+{
+  "title": "Kyoto & Osaka Trip",
+  "subtitle": "5-Day Itinerary · Sam, Priya, Alex & Jordan",
+  "emblem": "KO",
+  "welcomeTitle": "Plan your 5-day Kyoto & Osaka getaway",
+  "starterPrompts": [
+    {
+      "label": "Should we take Flight B and stay at Ryokan Gion on Day 1?",
+      "prompt": "Should we take Flight B and stay at Ryokan Gion on Day 1?"
+    },
+    {
+      "label": "Can we do the Nishiki Market Street Food Tour for lunch on Day 2?",
+      "prompt": "Can we do the Nishiki Market Street Food Tour for lunch on Day 2, and where should we eat dinner in Arashiyama?"
+    },
+    {
+      "label": "@Maya and @Liam breakdown flight/hotel costs and airport transit",
+      "prompt": "@Maya and @Liam give us a breakdown of flight and hotel costs plus airport transit times."
+    }
+  ],
+  "agents": {
+    "maya": { "shortRole": "Flights & Budget" },
+    "liam": { "shortRole": "Transit & Food" },
+    "zoe": { "shortRole": "Group & Dietary" }
+  }
+}

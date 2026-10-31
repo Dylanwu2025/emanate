@@ -3,7 +3,6 @@ import {
   AGENT_PROFILES,
   EFFORT_MAX_TOKENS,
   buildAgentSystemPrompt,
-  getAgentProfile,
   type CustomAgentRuntimeConfig,
   type EffortLevel,
 } from './agents.js';
@@ -29,7 +28,7 @@ import {
   type WaveRoutingPlan,
 } from './router.js';
 
-export const MAX_A2A_WAVES = 3;
+export const MAX_A2A_WAVES = 5;
 
 export interface PublicWireMessage {
   seq: number;
@@ -348,7 +347,7 @@ export class GroupChatOrchestrator extends EventEmitter {
   public readonly router: TurnRouter;
   public readonly maxA2AWaves: number;
   public readonly streamPaceMs: number;
-  public readonly runtimeConfig?: CustomAgentRuntimeConfig;
+  private currentRuntimeConfig?: CustomAgentRuntimeConfig;
 
   private readonly activeStreams = new Map<AgentId, ActiveAgentStreamState>();
   private turnAbortController: AbortController | null = null;
@@ -362,7 +361,7 @@ export class GroupChatOrchestrator extends EventEmitter {
     super();
     this.store = options.store;
     this.llm = options.llm;
-    this.runtimeConfig = options.runtimeConfig;
+    this.currentRuntimeConfig = options.runtimeConfig;
     this.router = new TurnRouter(options.llm, options.runtimeConfig);
     this.maxA2AWaves = options.maxA2AWaves ?? MAX_A2A_WAVES;
     const envPace = Number(process.env.STREAM_PACE_MS ?? 0);
@@ -464,6 +463,17 @@ export class GroupChatOrchestrator extends EventEmitter {
   public async reset(): Promise<void> {
     await this.stopAll();
     this.store.reset();
+  }
+
+  public get runtimeConfig(): CustomAgentRuntimeConfig | undefined {
+    return this.currentRuntimeConfig;
+  }
+
+  /** Swaps agent profiles and vaults; the chat is cleared because its history belongs to the old ones. */
+  public async switchRuntimeConfig(runtimeConfig: CustomAgentRuntimeConfig | undefined): Promise<void> {
+    await this.stopAll();
+    this.store.reset();
+    this.currentRuntimeConfig = runtimeConfig;
   }
 
   public async handleUserMessage(content: string): Promise<RunTurnResult> {
@@ -645,7 +655,8 @@ export class GroupChatOrchestrator extends EventEmitter {
         for (const [agentId, { stream, snapshot }] of preAbortedStreams.entries()) {
           if (!finalTargetSet.has(agentId)) {
             stream.pendingContinuation = {
-              directive: 'Continue your original thought naturally.',
+              directive:
+                "Nothing changes for you: keep what you already wrote word for word and finish the message as planned. The user's latest message was for a teammate, so don't respond to it.",
               flushedSnapshot: snapshot,
             };
             stream.classificationGate?.resolve('continue');
@@ -828,6 +839,7 @@ export class GroupChatOrchestrator extends EventEmitter {
             waveIndex === 0
               ? trimmedUserText
               : transcriptSnapshot[transcriptSnapshot.length - 1]?.content,
+          turnUserMessageSeq: userMessage.seq,
           previousWaveSpeakers,
           turnThesesByAgent,
           runtimeConfig: this.runtimeConfig,
@@ -947,21 +959,45 @@ export class GroupChatOrchestrator extends EventEmitter {
     const preWaveTranscript = this.store.listMessages();
 
     const waveSpeakerIds = speakers.map((s) => s.agentId);
-    const initialWavePromises = reservedSlots.map(({ speaker, row, streamState }) =>
+    const streamSlot = (
+      { speaker, row, streamState }: (typeof reservedSlots)[number],
+      dependency?: { agentId: AgentId; messageId: string },
+    ) =>
       this.streamSingleAgentInWave({
         speaker,
         row,
         streamState,
-        preWaveTranscript,
-        reservedIds,
+        preWaveTranscript: dependency ? this.store.listMessages() : preWaveTranscript,
+        reservedIds: dependency
+          ? new Set([...reservedIds].filter((id) => id !== dependency.messageId))
+          : reservedIds,
         isFinalWave,
-        coSpeakers: waveSpeakerIds.filter((id) => id !== speaker.agentId),
+        coSpeakers: waveSpeakerIds.filter(
+          (id) => id !== speaker.agentId && id !== dependency?.agentId,
+        ),
         previousWaveSpeakers,
         turnSignal,
-      }),
-    );
+      });
 
-    const results = await Promise.all(initialWavePromises);
+    const promiseByAgent = new Map<AgentId, Promise<PublicWireMessage>>();
+    for (const slot of reservedSlots) {
+      if (!slot.speaker.dependsOn) promiseByAgent.set(slot.speaker.agentId, streamSlot(slot));
+    }
+    for (const slot of reservedSlots) {
+      const dependsOn = slot.speaker.dependsOn;
+      if (!dependsOn) continue;
+      const dependencySlot = reservedSlots.find((s) => s.speaker.agentId === dependsOn)!;
+      const dependency = { agentId: dependsOn, messageId: dependencySlot.row.id };
+      const startAfterDependency = () => streamSlot(slot, dependency);
+      promiseByAgent.set(
+        slot.speaker.agentId,
+        promiseByAgent.get(dependsOn)!.then(startAfterDependency, startAfterDependency),
+      );
+    }
+
+    const results = await Promise.all(
+      reservedSlots.map((slot) => promiseByAgent.get(slot.speaker.agentId)!),
+    );
     while (this.currentWaveDynamicPromises.length > 0) {
       const extraPromises = this.currentWaveDynamicPromises.splice(0);
       const extraResults = await Promise.all(extraPromises);
@@ -1042,11 +1078,7 @@ export class GroupChatOrchestrator extends EventEmitter {
             ? [
                 {
                   role: 'user' as const,
-                  content: `[Live In-Flight Redirect: "${currentContinuation.directive}"]
-Your partial draft on screen so far was:
-<already_spoken>${currentContinuation.flushedSnapshot}</already_spoken>
-
-Rewrite your message from the beginning by keeping the exact wording and unaffected parts of <already_spoken>, changing ONLY what "${currentContinuation.directive}" requires (for example, converting the currency/numbers or condensing only the targeted section), and then seamlessly complete the rest of your response for your domain (${getAgentProfile(agentId, this.runtimeConfig).roleTitle}). Output ONLY the updated full message text.`,
+                  content: `Revise your in-progress message now, following: "${currentContinuation.directive}". Output only the full updated message.`,
                 },
               ]
             : []),

@@ -1,4 +1,4 @@
-const AGENT_META = {
+let AGENT_META = {
   maya: {
     name: 'Maya',
     initial: 'M',
@@ -16,7 +16,7 @@ const AGENT_META = {
   },
 };
 
-const MENTION_CANDIDATES = [
+let MENTION_CANDIDATES = [
   { id: 'maya', tag: '@Maya', name: 'Maya', role: 'Flights, Hotels & Budget' },
   { id: 'liam', tag: '@Liam', name: 'Liam', role: 'Local Guide — Transit & Food' },
   { id: 'zoe', tag: '@Zoe', name: 'Zoe', role: 'Group Pacing & Dietary' },
@@ -32,6 +32,10 @@ const inputEl = document.getElementById('composer-input');
 const stopBtnEl = document.getElementById('stop-btn');
 const resetBtnEl = document.getElementById('reset-btn');
 const mentionMenuEl = document.getElementById('mention-menu');
+const scenarioSelectEl = document.getElementById('scenario-select');
+const starterPromptsEl = document.getElementById('starter-prompts');
+
+let activeScenarioId = null;
 
 let isPinnedToBottom = true;
 
@@ -355,6 +359,10 @@ function connectSSE() {
         }
       } else if (event.type === 'message.done' && event.message) {
         upsertMessageInDOM(event.message, false);
+      } else if (event.type === 'scenario.changed') {
+        messagesById.clear();
+        renderAllMessages(true);
+        loadScenarios().catch(() => {});
       } else if (event.type === 'turn.idle') {
         for (const msg of messagesById.values()) {
           if (msg.status === 'streaming') {
@@ -567,11 +575,115 @@ document.querySelectorAll('[data-mention]').forEach((btn) => {
   });
 });
 
-document.querySelectorAll('[data-prompt]').forEach((chip) => {
-  chip.addEventListener('click', () => {
-    const prompt = chip.getAttribute('data-prompt') || '';
-    sendUserMessage(prompt);
+starterPromptsEl.addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-prompt]');
+  if (chip) {
+    sendUserMessage(chip.getAttribute('data-prompt') || '');
+  }
+});
+
+function renderWelcomeText(agents) {
+  const welcomeEl = document.getElementById('welcome-text');
+  welcomeEl.textContent = 'Chat with ';
+  agents.forEach((agent, idx) => {
+    if (idx > 0) {
+      welcomeEl.append(idx === agents.length - 1 ? ', and ' : ', ');
+    }
+    const nameEl = document.createElement('strong');
+    nameEl.textContent = agent.name;
+    welcomeEl.append(nameEl, ` (${agent.roleTitle})`);
   });
+  welcomeEl.append(' all in one place.');
+}
+
+function renderStarterPrompts(starterPrompts) {
+  starterPromptsEl.innerHTML = '';
+  for (const { label, prompt } of starterPrompts) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'starter-chip';
+    chip.dataset.prompt = prompt;
+    chip.textContent = `“${label}”`;
+    starterPromptsEl.appendChild(chip);
+  }
+}
+
+function applyScenario(scenario) {
+  document.title = `${scenario.title} — Group Chat`;
+  document.getElementById('group-title').textContent = scenario.title;
+  document.getElementById('group-subtitle').textContent = scenario.subtitle;
+  document.getElementById('group-emblem').textContent = scenario.emblem;
+  document.getElementById('welcome-title').textContent = scenario.welcomeTitle;
+
+  AGENT_META = Object.fromEntries(
+    scenario.agents.map((a) => [a.id, { name: a.name, initial: a.name[0], role: a.shortRole }]),
+  );
+  MENTION_CANDIDATES = scenario.agents.map((a) => ({
+    id: a.id,
+    tag: `@${a.name}`,
+    name: a.name,
+    role: a.roleTitle,
+  }));
+  for (const agent of scenario.agents) {
+    const roleEl = document.querySelector(`[data-role-for="${agent.id}"]`);
+    if (roleEl) roleEl.textContent = agent.shortRole;
+  }
+
+  renderWelcomeText(scenario.agents);
+  renderStarterPrompts(scenario.starterPrompts);
+  renderAllMessages(false);
+}
+
+async function loadScenarios() {
+  const res = await fetch('/api/scenarios');
+  if (!res.ok) return;
+  const data = await res.json();
+  activeScenarioId = data.activeScenarioId;
+
+  scenarioSelectEl.innerHTML = '';
+  if (!activeScenarioId) {
+    scenarioSelectEl.add(new Option('Custom setup', '', true, true));
+  }
+  for (const scenario of data.scenarios) {
+    scenarioSelectEl.add(new Option(scenario.title, scenario.id, false, scenario.id === activeScenarioId));
+  }
+
+  const active = data.scenarios.find((s) => s.id === activeScenarioId);
+  if (active) {
+    applyScenario(active);
+  }
+}
+
+scenarioSelectEl.addEventListener('change', async () => {
+  const nextId = scenarioSelectEl.value;
+  if (!nextId || nextId === activeScenarioId) return;
+
+  if (
+    messagesById.size > 0 &&
+    !window.confirm('Switching scenarios clears the current chat. Continue?')
+  ) {
+    scenarioSelectEl.value = activeScenarioId ?? '';
+    return;
+  }
+
+  scenarioSelectEl.disabled = true;
+  try {
+    const res = await fetch('/api/scenario', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scenarioId: nextId }),
+    });
+    if (res.ok) {
+      messagesById.clear();
+      await loadScenarios();
+    } else {
+      scenarioSelectEl.value = activeScenarioId ?? '';
+    }
+  } catch {
+    scenarioSelectEl.value = activeScenarioId ?? '';
+  } finally {
+    scenarioSelectEl.disabled = false;
+  }
 });
 
 stopBtnEl.addEventListener('click', async () => {
@@ -602,6 +714,6 @@ resetBtnEl.addEventListener('click', async () => {
   }
 });
 
-fetchInitialState().then(() => {
+Promise.all([loadScenarios().catch(() => {}), fetchInitialState()]).then(() => {
   connectSSE();
 });

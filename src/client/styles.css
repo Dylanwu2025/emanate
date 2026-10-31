@@ -179,6 +179,24 @@ body {
   gap: 8px;
 }
 
+.scenario-select {
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  max-width: 220px;
+}
+
+.scenario-select:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
 .btn-secondary {
   padding: 7px 12px;
   border-radius: 8px;
