@@ -4,6 +4,12 @@ A three-agent group chat. Maya, Liam, and Zoe each have a private knowledge vaul
 
 Internal machinery (effort, theses, epochs, standing rules) never reaches the browser.
 
+## Demo
+
+<video src="demo.mp4" controls playsinline width="100%" title="Emanate demo: three-agent group chat with mid-stream steering">
+  A walkthrough of concurrent streaming, mid-stream steering, and follow-up waves. <a href="demo.mp4">Download the demo</a>.
+</video>
+
 ## How it is built
 
 One Node.js process, one port, no queue, no extra containers. The browser is vanilla JS. Persistence is SQLite. Model choice is an `.env` change.
