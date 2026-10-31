@@ -130,6 +130,49 @@ export function isUserBookingConfirmationMessage(text: string): boolean {
   );
 }
 
+const FOLLOW_UP_VERIFICATION_CUE_RE =
+  /\b(?:i\s+am\s+gathering|i'm\s+gathering|so\s+i\s+gather|so\s+we\s+are\s+good|so\s+we're\s+good|should\s+still\s+be\s+good|we\s+should\s+be\s+fine|is\s+that\s+right|correct\?|right\?|just\s+to\s+confirm|to\s+make\s+sure|wait\s+so|so\s+basically)\b/i;
+
+export function isFollowUpVerificationOnDiscussedTopics(
+  userText: string,
+  transcript: MessageRow[],
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): boolean {
+  const trimmed = userText.trim();
+  const priorAgentMsgs = transcript.filter((m) => m.role === 'agent' && m.content.length > 0);
+  if (priorAgentMsgs.length === 0) return false;
+
+  if (FOLLOW_UP_VERIFICATION_CUE_RE.test(trimmed)) {
+    return true;
+  }
+
+  // Also check if every vault-indexed entity mentioned in the user's prompt has ALREADY been
+  // discussed in prior agent messages AND the user is asking if it's "good" / "fine" / "okay" / "safe"
+  const asksIfGoodOrSafe =
+    /\b(?:still\s+be\s+good|be\s+fine|be\s+okay|work\s+for\s+us|good\s+to\s+go)\b/i.test(trimmed);
+  if (!asksIfGoodOrSafe) return false;
+
+  const priorCombined = priorAgentMsgs.map((m) => m.content.toLowerCase()).join('\n');
+  const promptWords = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4);
+
+  const allVaultKeywords = new Set<string>();
+  for (const id of AGENT_IDS) {
+    for (const kw of getAgentDomainIndexKeywords(id, runtimeConfig)) {
+      allVaultKeywords.add(kw);
+    }
+  }
+
+  const mentionedVaultWords = promptWords.filter((w) => allVaultKeywords.has(w));
+  return (
+    mentionedVaultWords.length > 0 &&
+    mentionedVaultWords.every((w) => priorCombined.includes(w))
+  );
+}
+
 export function isStandaloneStandingRuleMessage(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.includes('?')) return false;
@@ -843,7 +886,8 @@ Return strict JSON:
       (isCasualSocialMessage(lastUserMessageContent) ||
         isGeneralRecapQuery(lastUserMessageContent) ||
         isStandaloneStandingRuleMessage(lastUserMessageContent) ||
-        isUserBookingConfirmationMessage(lastUserMessageContent))
+        isUserBookingConfirmationMessage(lastUserMessageContent) ||
+        isFollowUpVerificationOnDiscussedTopics(lastUserMessageContent, transcript, runtimeConfig))
     ) {
       return {
         waveIndex,
@@ -1170,6 +1214,31 @@ Return strict JSON:
         }
         for (const id of AGENT_IDS) {
           if (!mentionedSet.has(id)) {
+            rawDecisions[id] = { effort: 'silent', thesis: '' };
+          }
+        }
+      } else if (
+        !isMock &&
+        isFollowUpVerificationOnDiscussedTopics(referenceText, transcript, runtimeConfig)
+      ) {
+        // Single-Speaker Rule for Follow-Up Verification / Misconception Checks on Already-Discussed Topics:
+        // When the user asks "ok so I am gathering that the market tour should still be good and that we should be fine getting the tofu kaiseki?",
+        // all the facts are already in the shared transcript! Pick AT MOST ONE agent (preferring Zoe for group suitability/safety
+        // checks, or the primary LLM-chosen speaker) so two agents never output identical 3-sentence clarifications!
+        const activeCandidates = AGENT_IDS.filter((id) => rawDecisions[id].effort !== 'silent');
+        const singleSpeaker: AgentId =
+          activeCandidates.includes('zoe')
+            ? 'zoe'
+            : activeCandidates[0] ?? 'zoe';
+        for (const id of AGENT_IDS) {
+          if (id === singleSpeaker) {
+            if (rawDecisions[id].effort === 'silent') {
+              rawDecisions[id] = {
+                effort: 'standard',
+                thesis: 'Clarify what works and what must be avoided based on the constraints already discussed.',
+              };
+            }
+          } else {
             rawDecisions[id] = { effort: 'silent', thesis: '' };
           }
         }
