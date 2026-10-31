@@ -95,14 +95,15 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
         delayMs: 25,
       });
 
-      // Maya continuation stream after mid-stream steering redirect
+      // Maya surgical in-place replacement stream after mid-stream steering redirect
       mockLLM.enqueueStream({
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
           opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
         chunks: [
-          '—which converts to ¥97,500 for Flight A ',
-          'and ¥123,000 for Flight B.',
+          'Looking at the flight options, ',
+          'Flight A is ¥97,500 and Flight B is ¥123,000 ',
+          'which leaves plenty of room in our ¥720,000 JPY budget.',
         ],
         delayMs: 10,
       });
@@ -163,10 +164,11 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       expect(mayaFinalMsg.seq).toBe(mayaInitialSeq);
       expect(mayaFinalMsg.status).toBe('completed');
       expect(mayaFinalMsg.content).toBe(
-        'Looking at the flight options, Flight A is $650 and Flight B is $820 —which converts to ¥97,500 for Flight A and ¥123,000 for Flight B.',
+        'Looking at the flight options, Flight A is ¥97,500 and Flight B is ¥123,000 which leaves plenty of room in our ¥720,000 JPY budget.',
       );
       // Verify the aborted tail chunks from stream #1 never leaked into Maya's message
-      expect(mayaFinalMsg.content).not.toContain('plenty of room in our $4,800 USD budget');
+      expect(mayaFinalMsg.content).not.toContain('$4,800 USD');
+      expect(mayaFinalMsg.content).not.toContain('$650');
 
       const liamFinalMsg = allMessages[2];
       expect(liamFinalMsg.status).toBe('completed');
@@ -769,15 +771,10 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
         expect(mayaMessages[0].seq).toBe(mayaSeqBefore);
         expect(mayaMessages[0].status).toBe('completed');
 
-        // Maya's bubble starts with the exact pre-steer snapshot and pivots to JPY (¥ / JPY / 97,500 / 123,000 / 57,000 / 43,500)
-        expect(mayaMessages[0].content.startsWith(mayaPrefixSnapshot.trimEnd())).toBe(true);
-        const continuationSuffix = mayaMessages[0].content.slice(mayaPrefixSnapshot.trimEnd().length);
-        expect(continuationSuffix.length).toBeGreaterThan(10);
-        expect(continuationSuffix).toMatch(/¥|JPY|Yen|97,500|123,000|57,000|43,500/i);
+        // Maya's bubble was surgically updated in-place to JPY (¥ / JPY / 97,500 / 123,000 / 57,000 / 43,500)
+        expect(mayaMessages[0].content.length).toBeGreaterThan(20);
+        expect(mayaMessages[0].content).toMatch(/¥|JPY|Yen|97,500|123,000|57,000|43,500/i);
         expect(mayaMessages[0].content).not.toContain('-- **');
-        if (/[-*]\s+\*\*Flight A/i.test(mayaPrefixSnapshot)) {
-          expect(continuationSuffix).not.toMatch(/[-*]\s+\*\*Flight A/i);
-        }
 
         // Liam completed his message uninterrupted
         expect(liamMessages).toHaveLength(1);

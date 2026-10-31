@@ -168,7 +168,7 @@ describe('Part 4: Group Chat Web UI, Documentation & End-to-End Verification', (
               } else if (ev.type === 'message.delta') {
                 const msg = clientMessagesById.get(ev.id);
                 if (msg) {
-                  msg.content += ev.delta;
+                  msg.content = ev.replace ? ev.delta : msg.content + ev.delta;
                 }
               } else if (ev.type === 'message.done') {
                 clientMessagesById.set(ev.message.id, { ...ev.message });
@@ -214,7 +214,7 @@ describe('Part 4: Group Chat Web UI, Documentation & End-to-End Verification', (
         match: (opts) =>
           opts.messages[0].content.includes('You are Maya') &&
           opts.messages[0].content.includes('Mid-Stream Steering Continuation'),
-        chunks: ['—or ¥97,500 and ¥123,000 in JPY.'],
+        chunks: ['Flight A is ¥97,500 ', 'and Flight B is ¥123,000 in JPY.'],
         delayMs: 10,
       });
 
@@ -268,7 +268,9 @@ describe('Part 4: Group Chat Web UI, Documentation & End-to-End Verification', (
         { seq: 5, role: 'user', agentId: null },
       ]);
 
-      expect(reloadData.messages[1].content).toContain('—or ¥97,500 and ¥123,000 in JPY.');
+      expect(reloadData.messages[1].content).toBe(
+        'Flight A is ¥97,500 and Flight B is ¥123,000 in JPY.',
+      );
 
       sseAbort.abort();
       await sseReaderTask;

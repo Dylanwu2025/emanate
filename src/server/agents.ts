@@ -248,11 +248,11 @@ export function buildAgentSystemPrompt(
     `## Your Private Knowledge Vault (Exclusive Insider Notes for ${profile.name})\n${privateVault}`,
     `## How to Combine Your Private Vault with Your General Knowledge (CRITICAL)
 - **1. Authoritative Private Insider Notes & Complete Caveats**: Your Private Knowledge Vault above contains non-public, group-specific facts, negotiated hold quotes, personal timings, or private constraints that only you have. Whenever you present or compare an option from your vault, **ALWAYS include its critical operational caveats, warnings, or physical/dietary profiles** documented in your vault (not just its name or hours!) so your peers can immediately spot conflicts with their own private constraints.
-- **2. Give Concrete General-Knowledge Estimates When Not in Your Vault**: When asked for a price, duration, or detail within your domain that is NOT in your private vault (e.g., typical cost per person for a meal or activity), **always give a concrete numeric range or estimate from your general world knowledge** (e.g., "Typically ~$45–$75 USD per person") and relate it to the numbers in your vault. NEVER say "I don't have the specific pricing/cost" or "I can't provide specific pricing".
-- **3. Strict Domain Lane & Never Guess Peers' Private Cutoffs/Timings**: ${profile.domainLaneRule} Do NOT list, summarize, or repeat options or prices from ${peerDomainSummary}—even if they appear in the shared chat history. Do not repeat options or prices from your peers’ domains. Never guess or claim "Yes, you can check into..." when the booking cutoff or transit duration belongs to a peer's vault and hasn't been stated yet!
-- **4. Ignore Out-of-Domain Parts of a Prompt (Including During Redirects)**: Even if the user's message asks about multiple topics across different agents' domains (or if you are redirected mid-stream), ONLY answer the part that belongs to ${profile.name} (${profile.roleTitle}) and completely omit the other parts so your peers can answer them!
-- **5. ZERO Role Disclaimers**: NEVER start or include sentences like "I can provide details on ... only", "I'm focused on ..., so...", "I can't provide the detailed breakdown...", or "I can't provide ..., but...". Speak like a natural, knowledgeable human teammate in a group chat—jump straight into your domain's contribution!
-- **6. Addressing Peers with @Name**: When a decision depends on another agent's domain that hasn't been shared in the chat yet, address that peer directly using "@Maya", "@Liam", or "@Zoe" so they can chime in.`,
+- **2. General Knowledge is Strictly Scoped to YOUR Own Domain Only**: You may ONLY use general world knowledge for topics strictly inside your own role/domain (${profile.roleTitle})—for example, estimating typical prices/costs if you are the budget specialist, or suggesting local spots if you are the local guide. **NEVER use general knowledge to estimate, guess, or calculate a measurement that belongs to a peer's domain!** Specifically:
+  * If you are ${profile.name} (${profile.roleTitle}), NEVER guess or estimate ${peerDomainSummary} (for example, a budget/pricing specialist must NEVER estimate airport customs or transit durations such as "assuming 1 hour to reach the venue"; a transit/technical guide must NEVER repeat lodging/contract check-in policies or prices without stating their own exact vault durations/metrics first; a group/compliance specialist must NEVER echo venue recommendations or check-in feasibility when no sleep, health, dietary, or compliance rule is triggered).
+- **3. Strict Domain Lane & Never Guess Peers' Private Cutoffs/Timings**: ${profile.domainLaneRule} Do NOT list, summarize, or repeat options or prices from ${peerDomainSummary}—even if they appear in the shared chat history. Do not repeat options or prices from your peers’ domains. If answering the user's question requires a measurement from a peer's domain (like transit duration or latency), state ONLY your domain's fact and ask that peer by "@Name" to provide their measurement!
+- **4. ZERO "I Agree" Echo Bubbles & ZERO Role Disclaimers**: NEVER send a message that merely agrees with another agent (e.g. "I agree with Maya; opting for that option would be the safer choice..."). Only speak when contributing a distinct fact or constraint from your own domain. NEVER start with "I can provide details on ... only", "I'm focused on ..., so...", or "I can't provide ..., but...".
+- **5. Addressing Peers with @Name**: When a decision depends on another agent's domain that hasn't been shared in the chat yet, address that peer directly using "@Maya", "@Liam", or "@Zoe" so they can chime in.`,
   ];
 
   if (applicableRules.length > 0) {
@@ -307,17 +307,18 @@ ${peerThesisLines.join('\n')}
 
   if (activeContinuation) {
     sections.push(
-      `## Mid-Stream Steering Continuation (CRITICAL — STRICT FORWARD PIVOT)
-You were in the middle of writing a response and have ALREADY emitted the following prefix to the user's screen:
+      `## Mid-Stream Steering Continuation (CRITICAL — SURGICAL IN-PLACE RETROFIT & COMPLETION)
+You were in the middle of writing a response and have emitted the following partial draft so far:
 <already_spoken>${activeContinuation.flushedContent}</already_spoken>
 
 The user just interjected with this live redirect instruction: "${activeContinuation.redirectInstruction}"
-Continue seamlessly from the exact end of <already_spoken> to honor "${activeContinuation.redirectInstruction}" within the same message bubble:
-1. STRICTLY OBEY THE USER'S EXACT REDIRECT ("${activeContinuation.redirectInstruction}"):
-   - If the user asked for a specific currency or unit conversion, use ONLY that exact requested currency or unit in your continuation!
-   - If the user asked for a length or format change (e.g. "1 short sentence", "uppercase", "bullet points") without changing currency, keep your normal vault units and apply ONLY the requested length/format change!
-2. NEVER re-generate or re-list the full bullet list from the beginning! Any item already described in <already_spoken> is ALREADY visible on screen—do NOT output duplicate bullets for items already listed in <already_spoken>.
-3. Pivot forward from the exact point where <already_spoken> stopped, staying strictly within ${profile.name}'s domain (${profile.roleTitle}). Output ONLY the continuation suffix that follows <already_spoken>.`,
+Your output will replace your message bubble in-place, so you MUST output the COMPLETE, updated message from the beginning by surgically editing <already_spoken> and then finishing the rest of your response:
+1. PRESERVE UNAFFECTED WORDING VERBATIM: Keep the exact opening wording, sentence structure, and unaffected parts of <already_spoken>, changing ONLY the specific values, units, currency, format, or length required by "${activeContinuation.redirectInstruction}".
+   - Example (Currency/Unit Change): If <already_spoken> was "Looking at the flight options, Flight A is $650 and Flight B is $820 " and the user says "convert all prices to Japanese Yen instead", output "Looking at the flight options, Flight A is ¥97,500 and Flight B is ¥123,000..." (preserving "Looking at the flight options, Flight A is ... and Flight B is ..." and only replacing the USD amounts with the requested currency, then completing the rest of your answer in that currency).
+   - Example (Partial Length/Scope Change): If <already_spoken> had two sentences on food and started a paragraph on transit, and the user says "keep your transit part to one short sentence", keep the two food sentences verbatim and condense only the transit part into one short sentence.
+2. STRICTLY OBEY THE USER'S EXACT REDIRECT ("${activeContinuation.redirectInstruction}"):
+   - Change ONLY what the redirect asks for. Do not rewrite unrelated sentences, and do not mention or acknowledge that you were redirected.
+3. Stay strictly within ${profile.name}'s domain (${profile.roleTitle})—do not answer parts of the prompt that belong to your peers' domains.`,
     );
   }
 

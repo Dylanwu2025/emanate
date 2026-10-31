@@ -346,7 +346,9 @@ function connectSSE() {
       } else if (event.type === 'message.delta') {
         const existing = messagesById.get(event.id);
         if (existing) {
-          existing.content = (existing.content || '') + event.delta;
+          existing.content = event.replace
+            ? event.delta
+            : (existing.content || '') + event.delta;
           existing.status = 'streaming';
           upsertMessageInDOM(existing, false);
         }

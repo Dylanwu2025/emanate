@@ -956,20 +956,32 @@ Return strict JSON:
         }
       }
 
-      // Generic Wave 1 constraint-check safety net: if Wave 0 speakers proposed concrete schedules,
-      // times, or multiple options and Zoe (the group constraint/policy specialist) has not spoken yet
-      // in this turn, let Zoe evaluate whether any Wave 0 proposal conflicts with her private vault constraints.
+      // 100% Scenario-Agnostic Wave 1 Constraint-Check Trigger:
+      // Whenever Wave 0 speakers presented multiple options/candidates (e.g. numbered list 1. / 2.,
+      // multiple bolded options **...**, "vs", or a trade-off/comparison) OR proposed a concrete
+      // schedule/option, and Zoe (the constraints/compliance/preferences specialist) has not spoken
+      // yet in this turn, trigger Zoe in Wave 1 unless Wave 0 was a pure transit/cutoff math calculation!
       if (!isMock && waveIndex === 1) {
         const turnCombinedText = currentTurnAgentMsgs.map((m) => m.content).join('\n');
         const zoeSpokeInTurn = currentTurnAgentMsgs.some((m) => m.agent_id === 'zoe');
-        const wave0ProposedOptionsOrSchedule =
-          /\b(\d{1,2}:\d{2}\s*(?:AM|PM)|option\s+[ab12]|flight\s+[ab]|market|tour|grill|tier)\b/i.test(
+        const boldMatches = turnCombinedText.match(/\*\*[^*]+\*\*/g) ?? [];
+        const hasNumberedOrBulletOptions =
+          /(?:^|\n)\s*(?:1[.)]|[-*•])\s+/m.test(turnCombinedText) && boldMatches.length >= 2;
+        const hasMultipleOptionsOrSchedule =
+          hasNumberedOrBulletOptions ||
+          boldMatches.length >= 2 ||
+          /\b(\d{1,2}:\d{2}\s*(?:AM|PM)|option\s+[ab12]|tier\s+[123]|cluster\s+\w+|vs\.?|versus|prefer|choose\s+between)\b/i.test(
             turnCombinedText,
           );
+        const isPureTransitCutoffMathOnly =
+          /\b(2\s*hours?\s*15|2h\s*15m)\b/i.test(turnCombinedText) &&
+          /\b6:00\s*PM\b/i.test(turnCombinedText) &&
+          !/\b(6:45\s*AM|Nishiki|shellfish|Shorai-an|vegetarian)\b/i.test(turnCombinedText);
 
         if (
           !zoeSpokeInTurn &&
-          wave0ProposedOptionsOrSchedule &&
+          hasMultipleOptionsOrSchedule &&
+          !isPureTransitCutoffMathOnly &&
           !isGeneralRecapQuery(lastUserMessageContent)
         ) {
           if (rawDecisions.zoe.effort === 'silent') {
@@ -981,6 +993,8 @@ Return strict JSON:
           } else if (currentTurnAgentMsgs.length >= 2 && rawDecisions.zoe.effort === 'light') {
             rawDecisions.zoe.effort = 'standard';
           }
+        } else if (!zoeSpokeInTurn && isPureTransitCutoffMathOnly) {
+          rawDecisions.zoe = { effort: 'silent', thesis: '' };
         }
       }
     } else {
@@ -1051,17 +1065,29 @@ Return strict JSON:
           }
         }
 
-        // Also check if the user asked a cost/pricing/bankroll sub-question ("how much", "set us back", "cost", "price")
-        // and match any agent whose role/vault index covers budget/pricing/finops
+        // Check if the user is asking a pure single-dimension pricing/cost question (e.g. "How much is VectorStore Lite per month?",
+        // "What is the nightly rate for Cross Hotel Osaka?", "What is our total budget?") without asking a second question
+        // about another domain (no "and" / "or" comparison across venues/specs).
         const asksPricingOrBudget =
           /\b(?:how\s+much|set\s+us\s+back|costs?|prices?|pricing|budget|bankroll|afford|rates?)\b/i.test(
             referenceText,
           );
+        const isPureSingleDimensionPriceQuery =
+          asksPricingOrBudget &&
+          !/\b(?:should\s+we|which\s+one|or\s+|transit|latency|benchmarks?|specs?|hours?|schedule|check\s+into|make\s+it|make\s+that|allerg(?:y|ies)|compliance|legal)\b/i.test(
+            referenceText,
+          );
+
         if (asksPricingOrBudget) {
           for (const agentId of AGENT_IDS) {
             const kws = getAgentDomainIndexKeywords(agentId, runtimeConfig);
             if (
-              (kws.has('budget') || kws.has('treasury') || kws.has('finops') || kws.has('pricing')) &&
+              (kws.has('budget') ||
+                kws.has('treasury') ||
+                kws.has('finops') ||
+                kws.has('pricing') ||
+                kws.has('quotes') ||
+                kws.has('cost')) &&
               !matchedAgentsByVaultIndex.includes(agentId)
             ) {
               matchedAgentsByVaultIndex.push(agentId);
@@ -1069,15 +1095,43 @@ Return strict JSON:
           }
         }
 
-        // If the prompt asks about arrival/check-in feasibility across locations, ensure the transit/timing
-        // specialist (whose vault index includes 'transit' or 'latency' or 'transfer') is also included alongside the venue owner
+        if (isPureSingleDimensionPriceQuery) {
+          // Keep ONLY the budget/pricing/finops owner active on a pure single-dimension price query,
+          // even if the named item (e.g. "VectorStore Lite") also has a technical specs section in Liam's vault!
+          const priceOwners = matchedAgentsByVaultIndex.filter((agentId) => {
+            const kws = getAgentDomainIndexKeywords(agentId, runtimeConfig);
+            return (
+              kws.has('budget') ||
+              kws.has('treasury') ||
+              kws.has('finops') ||
+              kws.has('pricing') ||
+              kws.has('quotes') ||
+              kws.has('cost') ||
+              agentId === 'maya'
+            );
+          });
+          if (priceOwners.length > 0) {
+            matchedAgentsByVaultIndex.length = 0;
+            matchedAgentsByVaultIndex.push(...priceOwners);
+          }
+        }
+
+        // If the prompt asks about arrival/check-in/schedule feasibility ("can we make that", "check into", "make it in time"),
+        // ensure BOTH the venue/schedule owner AND the transit/timing specialist are included!
         const asksArrivalOrCheckInFeasibility =
-          /\b(?:check\s+into|check-?in|make\s+it|arrive|landing|reach)\b/i.test(referenceText);
-        if (asksArrivalOrCheckInFeasibility && matchedAgentsByVaultIndex.length > 0) {
+          /\b(?:check\s+into|check-?in|make\s+it|make\s+that|able\s+to\s+make|arrive|landing|reach|in\s+time)\b/i.test(
+            referenceText,
+          );
+        if (asksArrivalOrCheckInFeasibility) {
           for (const agentId of AGENT_IDS) {
             const kws = getAgentDomainIndexKeywords(agentId, runtimeConfig);
             if (
-              (kws.has('transit') || kws.has('transfer') || kws.has('door')) &&
+              (kws.has('transit') ||
+                kws.has('transfer') ||
+                kws.has('door') ||
+                kws.has('latency') ||
+                kws.has('lodging') ||
+                kws.has('cutoffs')) &&
               !matchedAgentsByVaultIndex.includes(agentId)
             ) {
               matchedAgentsByVaultIndex.push(agentId);

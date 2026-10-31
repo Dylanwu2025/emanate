@@ -48,6 +48,7 @@ export type OrchestratorSSEEvent =
       seq: number;
       agentId: AgentId;
       delta: string;
+      replace?: boolean;
     }
   | {
       type: 'message.done';
@@ -387,15 +388,36 @@ export class GroupChatOrchestrator extends EventEmitter {
 
   /**
    * Epoch-guarded delta emission. Drops any zombie token whose epoch does not match
-   * the active stream's current epoch.
+   * the active stream's current epoch. When `replace` is true (on the first chunk of a
+   * surgical in-place mid-stream edit), replaces the message content in SQLite and emits
+   * `replace: true` on the SSE delta event so the UI updates without any blank flicker.
    */
-  public emitDeltaForEpoch(agentId: AgentId, epoch: number, delta: string): boolean {
+  public emitDeltaForEpoch(
+    agentId: AgentId,
+    epoch: number,
+    delta: string,
+    replace = false,
+  ): boolean {
     const streamState = this.activeStreams.get(agentId);
     if (!streamState) return false;
     if (streamState.stopped || streamState.epoch !== epoch) {
       return false;
     }
     if (!delta) return false;
+
+    if (replace) {
+      streamState.flushedContent = delta;
+      this.store.updateMessageContent(streamState.messageId, delta);
+      this.emitSSE({
+        type: 'message.delta',
+        id: streamState.messageId,
+        seq: streamState.seq,
+        agentId,
+        delta,
+        replace: true,
+      });
+      return true;
+    }
 
     streamState.flushedContent += delta;
     this.store.appendMessageDelta(streamState.messageId, delta);
@@ -1004,26 +1026,21 @@ export class GroupChatOrchestrator extends EventEmitter {
           ...(currentContinuation
             ? [
                 {
-                  role: 'assistant' as const,
-                  content: currentContinuation.flushedSnapshot,
-                },
-                {
                   role: 'user' as const,
-                  content: `[Live Redirect: "${currentContinuation.directive}"] Continue directly from the exact end of your partial message above to fulfill "${currentContinuation.directive}" strictly for your own domain (${getAgentProfile(agentId, this.runtimeConfig).roleTitle})—do NOT answer parts of the prompt that belong to your peers' domains, and do NOT repeat any bullet headers already written in your partial message above. Output ONLY the continuation suffix.`,
+                  content: `[Live In-Flight Redirect: "${currentContinuation.directive}"]
+Your partial draft on screen so far was:
+<already_spoken>${currentContinuation.flushedSnapshot}</already_spoken>
+
+Rewrite your message from the beginning by keeping the exact wording and unaffected parts of <already_spoken>, changing ONLY what "${currentContinuation.directive}" requires (for example, converting the currency/numbers or condensing only the targeted section), and then seamlessly complete the rest of your response for your domain (${getAgentProfile(agentId, this.runtimeConfig).roleTitle}). Output ONLY the updated full message text.`,
                 },
               ]
             : []),
         ];
 
-        const flushedBeforeContinuation = currentContinuation
-          ? currentContinuation.flushedSnapshot
-          : '';
-        const flushedTrimmed = flushedBeforeContinuation.trimEnd();
-        let needsSeamNormalization = Boolean(
-          currentContinuation && flushedBeforeContinuation.length > 0,
+        let needsFirstChunkReplace = Boolean(
+          currentContinuation && currentContinuation.flushedSnapshot.length > 0,
         );
-        let seamBuffer = '';
-        let disclaimerCheckDone = Boolean(currentContinuation);
+        let disclaimerCheckDone = false;
         let disclaimerBuffer = '';
 
         try {
@@ -1070,7 +1087,7 @@ export class GroupChatOrchestrator extends EventEmitter {
             if (!disclaimerCheckDone) {
               disclaimerBuffer += rawDelta;
               if (
-                /^I(?:'m|’m|\s+am|\s+can|\s+only)\b/i.test(disclaimerBuffer.trimStart()) &&
+                /^I(?:'m|’m|\s+am|\s+can|\s+don|\s+do|\s+only)\b/i.test(disclaimerBuffer.trimStart()) &&
                 !/[.!]\s/.test(disclaimerBuffer) &&
                 disclaimerBuffer.length < 110
               ) {
@@ -1082,24 +1099,12 @@ export class GroupChatOrchestrator extends EventEmitter {
               if (!deltaToEmit) continue;
             }
 
-            if (needsSeamNormalization) {
-              seamBuffer += deltaToEmit;
-              if (
-                seamBuffer.length < 48 &&
-                isPrefixOfWordBoundedSuffix(flushedTrimmed, seamBuffer)
-              ) {
-                continue;
-              }
-
-              deltaToEmit = normalizeContinuationSeam(flushedBeforeContinuation, seamBuffer);
-              seamBuffer = '';
-              if (!deltaToEmit) {
-                continue;
-              }
-              needsSeamNormalization = false;
+            if (needsFirstChunkReplace) {
+              needsFirstChunkReplace = false;
+              this.emitDeltaForEpoch(agentId, activeEpoch, deltaToEmit, true);
+            } else {
+              this.emitDeltaForEpoch(agentId, activeEpoch, deltaToEmit, false);
             }
-
-            this.emitDeltaForEpoch(agentId, activeEpoch, deltaToEmit);
           }
 
           if (
@@ -1113,25 +1118,12 @@ export class GroupChatOrchestrator extends EventEmitter {
             disclaimerBuffer = '';
             disclaimerCheckDone = true;
             if (cleaned) {
-              this.emitDeltaForEpoch(agentId, activeEpoch, cleaned);
-            }
-          }
-
-          if (
-            needsSeamNormalization &&
-            seamBuffer.length > 0 &&
-            !activeSignal.aborted &&
-            !streamState.stopped &&
-            streamState.epoch === activeEpoch
-          ) {
-            const finalSeamDelta = normalizeContinuationSeam(
-              flushedBeforeContinuation,
-              seamBuffer,
-            );
-            seamBuffer = '';
-            needsSeamNormalization = false;
-            if (finalSeamDelta) {
-              this.emitDeltaForEpoch(agentId, activeEpoch, finalSeamDelta);
+              if (needsFirstChunkReplace) {
+                needsFirstChunkReplace = false;
+                this.emitDeltaForEpoch(agentId, activeEpoch, cleaned, true);
+              } else {
+                this.emitDeltaForEpoch(agentId, activeEpoch, cleaned, false);
+              }
             }
           }
         } catch (err) {
