@@ -103,8 +103,8 @@ export function loadAgentPrivateContext(
 
 /**
  * Extracts high-level markdown section headings (`#` / `##` / `###`) from an agent's vault
- * without exposing any underlying bullet facts, numbers, or private details.
- * This allows the router to dynamically adapt if the user swaps out the markdown files for a new scenario!
+ * without exposing any underlying bullet facts, entity names, numbers, or private details.
+ * This allows the router prompt to dynamically adapt if the user swaps out the markdown files!
  */
 export function getAgentVaultTopicSummary(
   agentId: AgentId,
@@ -130,6 +130,51 @@ export function getAgentVaultTopicSummary(
     // Fallback to roleTitle if vault file cannot be read
   }
   return getAgentProfile(agentId, runtimeConfig).roleTitle;
+}
+
+/**
+ * Extracts significant searchable keywords from an agent's roleTitle, section headings,
+ * and bolded item/entity titles (without ever injecting those entity names into another agent's
+ * prompt or the shared LLM router prompt) so Wave 0 can deterministically match user prompts
+ * that name specific vault entities across ANY scenario!
+ */
+export function getAgentDomainIndexKeywords(
+  agentId: AgentId,
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): Set<string> {
+  const profile = getAgentProfile(agentId, runtimeConfig);
+  const topics: string[] = [profile.roleTitle];
+
+  try {
+    const rawVault = loadAgentPrivateContext(agentId, runtimeConfig);
+    for (const rawLine of rawVault.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (/^#{2,3}\s+/.test(line)) {
+        topics.push(line.replace(/^#{2,3}\s+/, '').replace(/\(.*?\)/g, ''));
+        continue;
+      }
+      const itemMatch = line.match(/^(?:\d+[.)]|[-*•])\s+\*\*([^*:]+)\*\*\s*(?::|$)/);
+      if (itemMatch) {
+        topics.push(itemMatch[1].replace(/\(.*?\)/g, '').replace(/—.*$/, ''));
+      }
+    }
+  } catch {
+    // Fallback to roleTitle
+  }
+
+  const genericIgnore = new Set([
+    'the', 'and', 'for', 'with', 'from', 'into', 'options', 'option', 'private',
+    'group', 'notes', 'insider', 'hold', 'holds', 'rules', 'rule', 'total',
+    'departure', 'arrival', 'price', 'nightly', 'rate', 'hours', 'strict',
+  ]);
+
+  const tokens = topics
+    .join(' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !genericIgnore.has(w));
+  return new Set(tokens);
 }
 
 export function filterApplicableStandingRules(
@@ -178,11 +223,11 @@ export function buildAgentSystemPrompt(
     `Personality & Voice: ${profile.personality}`,
     `## Your Private Knowledge Vault (Exclusive Insider Notes for ${profile.name})\n${privateVault}`,
     `## How to Combine Your Private Vault with Your General Knowledge (CRITICAL)
-- **1. Authoritative Private Insider Notes**: Your Private Knowledge Vault above contains non-public, group-specific facts, negotiated hold quotes, personal timings, or private constraints that only you have. Whenever a question touches something covered in your vault, treat your vault's numbers, names, and rules as authoritative and never contradict them.
+- **1. Authoritative Private Insider Notes & Complete Caveats**: Your Private Knowledge Vault above contains non-public, group-specific facts, negotiated hold quotes, personal timings, or private constraints that only you have. Whenever you present or compare an option from your vault, **ALWAYS include its critical operational caveats, warnings, or physical/dietary profiles** documented in your vault (not just its name or hours!) so your peers can immediately spot conflicts with their own private constraints.
 - **2. Give Concrete General-Knowledge Estimates When Not in Your Vault**: When asked for a price, duration, or detail within your domain that is NOT in your private vault (e.g., typical cost per person for a meal or activity), **always give a concrete numeric range or estimate from your general world knowledge** (e.g., "Typically ~$45–$75 USD per person") and relate it to the numbers in your vault. NEVER say "I don't have the specific pricing/cost" or "I can't provide specific pricing".
-- **3. Strict Domain Lane & Never Guess Peers' Private Timings**: ${profile.domainLaneRule} Do NOT list, summarize, or repeat options or prices from ${peerDomainSummary}—even if they appear in the shared chat history. Do not repeat options or prices from your peers’ domains. Never assume or claim whether a schedule/cutoff is feasible until the peer who owns that timing/constraint has stated their facts in the chat!
+- **3. Strict Domain Lane & Never Guess Peers' Private Cutoffs/Timings**: ${profile.domainLaneRule} Do NOT list, summarize, or repeat options or prices from ${peerDomainSummary}—even if they appear in the shared chat history. Do not repeat options or prices from your peers’ domains. Never guess or claim "Yes, you can check into..." when the booking cutoff or transit duration belongs to a peer's vault and hasn't been stated yet!
 - **4. Ignore Out-of-Domain Parts of a Prompt (Including During Redirects)**: Even if the user's message asks about multiple topics across different agents' domains (or if you are redirected mid-stream), ONLY answer the part that belongs to ${profile.name} (${profile.roleTitle}) and completely omit the other parts so your peers can answer them!
-- **5. ZERO Role Disclaimers**: NEVER start or include sentences like "I can provide details on ... only", "I'm focused on ..., so...", or "I can't provide ..., but...". Speak like a natural, knowledgeable human teammate in a group chat.
+- **5. ZERO Role Disclaimers**: NEVER start or include sentences like "I can provide details on ... only", "I'm focused on ..., so...", "I can't provide the detailed breakdown...", or "I can't provide ..., but...". Speak like a natural, knowledgeable human teammate in a group chat—jump straight into your domain's contribution!
 - **6. Addressing Peers with @Name**: When a decision depends on another agent's domain that hasn't been shared in the chat yet, address that peer directly using "@Maya", "@Liam", or "@Zoe" so they can chime in.`,
   ];
 

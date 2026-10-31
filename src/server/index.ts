@@ -138,6 +138,10 @@ export function createAppServer(options: AppServerOptions = {}): AppServerInstan
       }
 
       if (req.method === 'GET' && pathname === '/api/stream') {
+        req.socket.setTimeout(0);
+        req.socket.setNoDelay(true);
+        req.socket.setKeepAlive(true);
+
         res.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
           'Cache-Control': 'no-cache, no-transform',
@@ -148,7 +152,15 @@ export function createAppServer(options: AppServerOptions = {}): AppServerInstan
         res.write(': connected\n\n');
 
         sseClients.add(res);
+        const heartbeat = setInterval(() => {
+          if (!res.writableEnded) {
+            res.write(': heartbeat\n\n');
+          }
+        }, 15_000);
+        heartbeat.unref?.();
+
         req.on('close', () => {
+          clearInterval(heartbeat);
           sseClients.delete(res);
         });
         return;

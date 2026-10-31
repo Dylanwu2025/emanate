@@ -2,6 +2,7 @@ import {
   AGENT_IDS,
   AGENT_PROFILES,
   EFFORT_MAX_TOKENS,
+  getAgentDomainIndexKeywords,
   getAgentProfile,
   getAgentVaultTopicSummary,
   type CustomAgentRuntimeConfig,
@@ -1022,6 +1023,84 @@ Return strict JSON:
         for (const id of AGENT_IDS) {
           if (!mentionedSet.has(id)) {
             rawDecisions[id] = { effort: 'silent', thesis: '' };
+          }
+        }
+      } else if (
+        !isMock &&
+        !isCasualSocialMessage(referenceText) &&
+        !isStandaloneStandingRuleMessage(referenceText) &&
+        !isGeneralRecapQuery(referenceText)
+      ) {
+        // Scenario-agnostic vault-index matching:
+        // Tokenize the user's prompt and check which agents' dynamic vault topic/entity index
+        // (`getAgentDomainIndexKeywords`) is directly referenced by the prompt!
+        // This prevents context-momentum misrouting (e.g. routing a question about entities in Maya's
+        // or Liam's vault solely to Zoe just because Zoe spoke last in the previous turn).
+        const promptWords = referenceText
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .filter((w) => w.length >= 4);
+
+        const matchedAgentsByVaultIndex: AgentId[] = [];
+        for (const agentId of AGENT_IDS) {
+          const domainKeywords = getAgentDomainIndexKeywords(agentId, runtimeConfig);
+          const hasMatch = promptWords.some((word) => domainKeywords.has(word));
+          if (hasMatch) {
+            matchedAgentsByVaultIndex.push(agentId);
+          }
+        }
+
+        // Also check if the user asked a cost/pricing/bankroll sub-question ("how much", "set us back", "cost", "price")
+        // and match any agent whose role/vault index covers budget/pricing/finops
+        const asksPricingOrBudget =
+          /\b(?:how\s+much|set\s+us\s+back|costs?|prices?|pricing|budget|bankroll|afford|rates?)\b/i.test(
+            referenceText,
+          );
+        if (asksPricingOrBudget) {
+          for (const agentId of AGENT_IDS) {
+            const kws = getAgentDomainIndexKeywords(agentId, runtimeConfig);
+            if (
+              (kws.has('budget') || kws.has('treasury') || kws.has('finops') || kws.has('pricing')) &&
+              !matchedAgentsByVaultIndex.includes(agentId)
+            ) {
+              matchedAgentsByVaultIndex.push(agentId);
+            }
+          }
+        }
+
+        // If the prompt asks about arrival/check-in feasibility across locations, ensure the transit/timing
+        // specialist (whose vault index includes 'transit' or 'latency' or 'transfer') is also included alongside the venue owner
+        const asksArrivalOrCheckInFeasibility =
+          /\b(?:check\s+into|check-?in|make\s+it|arrive|landing|reach)\b/i.test(referenceText);
+        if (asksArrivalOrCheckInFeasibility && matchedAgentsByVaultIndex.length > 0) {
+          for (const agentId of AGENT_IDS) {
+            const kws = getAgentDomainIndexKeywords(agentId, runtimeConfig);
+            if (
+              (kws.has('transit') || kws.has('transfer') || kws.has('door')) &&
+              !matchedAgentsByVaultIndex.includes(agentId)
+            ) {
+              matchedAgentsByVaultIndex.push(agentId);
+            }
+          }
+        }
+
+        if (matchedAgentsByVaultIndex.length > 0) {
+          for (const matchedId of matchedAgentsByVaultIndex) {
+            if (rawDecisions[matchedId].effort === 'silent') {
+              rawDecisions[matchedId] = {
+                effort: 'standard',
+                thesis: getDomainSafeThesisFallback(matchedId, runtimeConfig),
+              };
+            }
+          }
+          // If the router mistakenly scheduled ONLY an agent whose vault index did NOT match any entity
+          // in the user's question (like scheduling only Zoe on a Flight B + Ryokan Gion check-in question),
+          // silence the non-matching agent in Wave 0 so the actual entity-owning agents speak first!
+          for (const id of AGENT_IDS) {
+            if (!matchedAgentsByVaultIndex.includes(id)) {
+              rawDecisions[id] = { effort: 'silent', thesis: '' };
+            }
           }
         }
       }

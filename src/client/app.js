@@ -318,8 +318,25 @@ async function fetchInitialState() {
   renderAllMessages(true);
 }
 
+let activeEventSource = null;
+let sseReconnectTimer = null;
+
 function connectSSE() {
+  if (sseReconnectTimer) {
+    clearTimeout(sseReconnectTimer);
+    sseReconnectTimer = null;
+  }
+  if (activeEventSource) {
+    activeEventSource.close();
+    activeEventSource = null;
+  }
+
   const es = new EventSource('/api/stream');
+  activeEventSource = es;
+
+  es.onopen = () => {
+    fetchInitialState().catch(() => {});
+  };
 
   es.onmessage = (ev) => {
     try {
@@ -350,10 +367,21 @@ function connectSSE() {
   };
 
   es.onerror = () => {
-    // Browser EventSource automatically reconnects; refresh canonical state on reconnect
     setTimeout(() => {
       fetchInitialState().catch(() => {});
     }, 1000);
+
+    if (es.readyState === EventSource.CLOSED) {
+      if (activeEventSource === es) {
+        activeEventSource = null;
+      }
+      if (!sseReconnectTimer) {
+        sseReconnectTimer = setTimeout(() => {
+          sseReconnectTimer = null;
+          connectSSE();
+        }, 1500);
+      }
+    }
   };
 }
 
@@ -366,14 +394,32 @@ async function sendUserMessage(rawText) {
   hideMentionMenu();
   inputEl.focus();
 
+  if (!activeEventSource || activeEventSource.readyState === EventSource.CLOSED) {
+    connectSSE();
+  }
+
   try {
     const res = await fetch('/api/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content }),
     });
-    if (!res.ok && !inputEl.value) {
-      inputEl.value = rawText;
+    if (!res.ok) {
+      if (!inputEl.value) {
+        inputEl.value = rawText;
+      }
+      return;
+    }
+    const data = await res.json().catch(() => null);
+    if (data) {
+      if (data.userMessage) {
+        upsertMessageInDOM(data.userMessage, true);
+      }
+      if (Array.isArray(data.messages)) {
+        for (const msg of data.messages) {
+          upsertMessageInDOM(msg, false);
+        }
+      }
     }
   } catch {
     if (!inputEl.value) {
