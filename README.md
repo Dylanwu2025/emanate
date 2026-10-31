@@ -6,9 +6,7 @@ Internal machinery (effort, theses, epochs, standing rules) never reaches the br
 
 ## Demo
 
-<video src="demo.mp4" controls playsinline width="100%" title="Emanate demo: three-agent group chat with mid-stream steering">
-  A walkthrough of concurrent streaming, mid-stream steering, and follow-up waves. <a href="demo.mp4">Download the demo</a>.
-</video>
+[![Emanate demo](docs/demo.png)](demo.mp4)
 
 ## How it is built
 
