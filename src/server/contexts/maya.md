@@ -28,3 +28,9 @@
 - **Cross Hotel Osaka (Dotonbori / Namba)**:
   - **Nightly Rate**: $260 USD per night total for the group (¥39,000 JPY/night)
   - **Check-In Policy**: 24-hour check-in, 3-minute walk from Dotonbori Canal.
+
+## Activity, Dining & Transit Budget Estimates
+- **Traditional Multi-Course Kaiseki Meal (Kyoto)**: $55 USD per person / $220 USD total for the group of 4 (¥8,250 JPY/person; ¥33,000 JPY total).
+- **Casual Street Food / Market Lunch (Kyoto)**: $25 USD per person / $100 USD total for the group of 4 (¥3,750 JPY/person; ¥15,000 JPY total).
+- **Osaka Teppanyaki / Casual Dinner**: $30 USD per person / $120 USD total for the group of 4 (¥4,500 JPY/person; ¥18,000 JPY total).
+- **KIX Airport Express & Local Rail Pass**: $35 USD per person / $140 USD total for the group of 4 (¥5,250 JPY/person; ¥21,000 JPY total).

@@ -799,10 +799,10 @@ Agents who just spoke in Wave ${waveIndex - 1}: ${JSON.stringify(inferredPrevSpe
 
 CRITICAL RULES FOR A2A FOLLOW-UP WAVES:
 1. NEVER allow an agent who just spoke in Wave ${waveIndex - 1} (${JSON.stringify(inferredPrevSpeakers)}) to speak again in Wave ${waveIndex}! An agent must NEVER reply to itself or speak in two consecutive waves.
-2. Questions directed to the USER are NOT triggers for the same agent to speak again.
-3. MANDATORY CROSS-DOMAIN CHECKS — An agent who was SILENT in Wave ${waveIndex - 1} MUST speak in Wave ${waveIndex} (with "isResolved": false) if a speaker in Wave ${waveIndex - 1}:
-   (a) directly asked them a question by name or domain, OR
-   (b) proposed a concrete option, schedule, timing, or activity where THIS silent peer agent's domain (listed above) contains constraints, feasibility timings, or restrictions that have NOT been checked yet in the current turn! (For example: if Maya proposed options with specific times/cutoffs or Liam proposed activities/dining/logistics, and Zoe has not yet checked how those options affect her group/health/pacing/policy constraints, Zoe MUST speak now; or if Liam has not yet provided transit/timing feasibility for a proposed cutoff, Liam MUST speak now; or if a peer just revealed a constraint vetoing an option, Maya can speak to recommend the alternative option from her vault.)
+2. NEVER schedule an agent just to say "I don't have that information, check directly with the venue/provider." If the previous speaker already answered the user's question (or noted what is in the vaults), set "isResolved": true and all agents to "silent"!
+3. MANDATORY CROSS-DOMAIN CHECKS — An agent who was SILENT in Wave ${waveIndex - 1} MUST speak in Wave ${waveIndex} (with "isResolved": false) ONLY if a speaker in Wave ${waveIndex - 1}:
+   (a) directly asked them a question by name ("@Maya", "@Liam", "@Zoe") that they actually have facts for in their domain, OR
+   (b) proposed a concrete option, schedule, timing, or activity where THIS silent peer agent's domain (listed above) contains constraints, feasibility timings, or restrictions that have NOT been checked yet in the current turn!
 4. Write each speaking agent's "thesis" as a short 5-10 word high-level topic label for THEIR domain only. NEVER invent or include specific numbers, prices, currencies, or clock times in a thesis!
 5. Once all relevant cross-agent domain checks for the user's question have been surfaced, set "isResolved": true and all agents to "silent".
 
@@ -819,7 +819,8 @@ ${agentDirectory}
 
 Rules for routing Wave 0:
 1. Silence Gate:
-   - Assign ONLY the agent(s) whose domain (listed above) directly matches the user's question! If a user asks a single-domain question (even if they also include a formatting instruction like "Answer in 1 sentence"), keep unrelated agents "silent".
+   - Assign ONLY the agent(s) whose domain (listed above) directly contains the answer to the user's question! For example, if the user asks a pure cost/budget question ("how much would that set us back?", "what does that cost?"), assign ONLY Maya (the budget/pricing specialist) and keep Liam and Zoe "silent" so they never say "I can't provide cost details, check with Maya".
+   - If a user asks a single-domain question (even if they also include a formatting instruction like "Answer in 1 sentence"), keep unrelated agents "silent".
    - If the user explicitly addresses specific agent(s) by name (e.g. "@Maya ..."), ONLY the addressed agent(s) may speak in Wave 0—all non-addressed agents MUST be "silent".
    - At least ONE agent MUST speak in Wave 0 on every user message! For casual greetings ("hey team!") or thanks ("thanks!"), assign "light" effort with thesis "Reply with a warm 1-sentence greeting/acknowledgment".
 2. Strict Domain Partition & Sequential Cross-Domain Synthesis (NO Fake Numbers in Thesis):
@@ -929,6 +930,32 @@ Return strict JSON:
         }
       }
 
+      // Deterministic A2A peer-mention & handoff check:
+      // If a speaker in Wave N-1 explicitly @mentioned or deferred to a peer who hasn't spoken yet
+      // in this turn (e.g. "@Maya how much does that cost?" or "check with Maya"), ensure that peer speaks!
+      if (!isMock) {
+        const prevWaveMsgs = currentTurnAgentMsgs.filter((m) =>
+          inferredPrevSpeakers.includes(m.agent_id!),
+        );
+        for (const msg of prevWaveMsgs) {
+          const peerMentions = extractMentionedAgents(msg.content, runtimeConfig).filter(
+            (id) => id !== msg.agent_id,
+          );
+          for (const targetPeerId of peerMentions) {
+            const peerAlreadySpokeInTurn = currentTurnAgentMsgs.some(
+              (m) => m.agent_id === targetPeerId,
+            );
+            if (!peerAlreadySpokeInTurn && rawDecisions[targetPeerId].effort === 'silent') {
+              rawDecisions[targetPeerId] = {
+                effort: 'standard',
+                thesis: getDomainSafeThesisFallback(targetPeerId, runtimeConfig),
+              };
+              raw.isResolved = false;
+            }
+          }
+        }
+      }
+
       // Generic Wave 1 constraint-check safety net: if Wave 0 speakers proposed concrete schedules,
       // times, or multiple options and Zoe (the group constraint/policy specialist) has not spoken yet
       // in this turn, let Zoe evaluate whether any Wave 0 proposal conflicts with her private vault constraints.
@@ -936,7 +963,7 @@ Return strict JSON:
         const turnCombinedText = currentTurnAgentMsgs.map((m) => m.content).join('\n');
         const zoeSpokeInTurn = currentTurnAgentMsgs.some((m) => m.agent_id === 'zoe');
         const wave0ProposedOptionsOrSchedule =
-          /\b(\d{1,2}:\d{2}\s*(?:AM|PM)|option\s+[ab12]|flight\s+[ab]|market|tour| grill|tier|plan)\b/i.test(
+          /\b(\d{1,2}:\d{2}\s*(?:AM|PM)|option\s+[ab12]|flight\s+[ab]|market|tour|grill|tier)\b/i.test(
             turnCombinedText,
           );
 
