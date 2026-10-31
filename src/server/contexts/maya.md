@@ -1,36 +1,26 @@
-# Maya — Private Vault (Budget, Flights & Lodging)
+# Maya — Private Insider Notes (Group Treasury, Held Quotes & Booking Cutoffs)
 
-## Group Budget Cap
-- **Total Group Budget**: $4,800 USD across all 4 travelers ($1,200 USD per person) for the 5-day Kyoto & Osaka trip.
-- **Currency Exchange Reference**: 1 USD = 150 JPY (use this exact conversion rate whenever quoting in Japanese Yen).
+## Private Group Treasury & Shared Card Rules
+- **Total Group Bankroll**: **$4,800 USD** total across all 4 friends (**$1,200 USD per person**) in our shared trip account.
+- **Unbooked Buffer Rule**: Keep at least **$400 USD** unallocated in the group kitty for spontaneous snacks, temple entries, and taxis.
+- **Currency Exchange Reference**: `1 USD = 150 JPY` (use this rate whenever quoting in Japanese Yen; `1 USD ≈ 0.92 EUR` for Euros).
 
-## Outbound Flight Options (into Kansai International Airport - KIX)
-1. **Flight A (ANA NH-105)**:
-   - **Departure**: 6:45 AM
-   - **Arrival at KIX**: 11:00 AM
-   - **Price**: $650 USD per person (¥97,500 JPY)
-   - **Notes**: Non-refundable saver fare; requires arriving at the departure airport by 4:45 AM.
-2. **Flight B (JAL JL-701)**:
-   - **Departure**: 11:30 AM
-   - **Arrival at KIX**: 3:45 PM
-   - **Price**: $820 USD per person (¥123,000 JPY)
-   - **Notes**: Includes 2 checked bags per traveler and flexible seat selection.
+## Travel-Agent Hold Quotes (Expiring Tonight — into Kansai International Airport - KIX)
+1. **Flight A (ANA NH-105 — Group Hold Quote #A1)**:
+   - **Departure**: **6:45 AM** (requires arriving at the departure airport by **4:45 AM**)
+   - **Arrival at KIX**: **11:00 AM**
+   - **Negotiated Fare**: **$650 USD per person** (¥97,500 JPY) — non-refundable saver hold.
+2. **Flight B (JAL JL-701 — Group Hold Quote #B2)**:
+   - **Departure**: **11:30 AM**
+   - **Arrival at KIX**: **3:45 PM**
+   - **Negotiated Fare**: **$820 USD per person** (¥123,000 JPY) — includes 2 checked bags per traveler and free seat selection.
 
-## Kyoto Lodging Options
-1. **Ryokan Gion Hatanaka (Traditional Inn in Gion)**:
-   - **Nightly Rate**: $380 USD per night total for the group (¥57,000 JPY/night)
-   - **Check-In Policy**: **Strict 6:00 PM check-in cutoff** — guests arriving after 6:00 PM forfeit their multi-course kaiseki welcome dinner and cannot check in that evening.
-2. **Hotel Granvia Kyoto (Directly inside Kyoto Station)**:
-   - **Nightly Rate**: $290 USD per night total for the group (¥43,500 JPY/night)
-   - **Check-In Policy**: **24-hour front desk check-in**, zero late-arrival penalty, immediate access from the Haruka airport express train platform.
-
-## Osaka Lodging Option (Days 4–5)
-- **Cross Hotel Osaka (Dotonbori / Namba)**:
-  - **Nightly Rate**: $260 USD per night total for the group (¥39,000 JPY/night)
-  - **Check-In Policy**: 24-hour check-in, 3-minute walk from Dotonbori Canal.
-
-## Activity, Dining & Transit Budget Estimates
-- **Traditional Multi-Course Kaiseki Meal (Kyoto)**: $55 USD per person / $220 USD total for the group of 4 (¥8,250 JPY/person; ¥33,000 JPY total).
-- **Casual Street Food / Market Lunch (Kyoto)**: $25 USD per person / $100 USD total for the group of 4 (¥3,750 JPY/person; ¥15,000 JPY total).
-- **Osaka Teppanyaki / Casual Dinner**: $30 USD per person / $120 USD total for the group of 4 (¥4,500 JPY/person; ¥18,000 JPY total).
-- **KIX Airport Express & Local Rail Pass**: $35 USD per person / $140 USD total for the group of 4 (¥5,250 JPY/person; ¥21,000 JPY total).
+## Negotiated Group Lodging Holds & Check-In Cutoffs
+1. **Ryokan Gion Hatanaka (Private Group Hold in Gion, Kyoto)**:
+   - **Locked Group Rate**: **$380 USD per night** total for the group (¥57,000 JPY/night).
+   - **Strict Host Rule**: **Strict 6:00 PM check-in cutoff** — our booking contract states that guests arriving after 6:00 PM forfeit their kaiseki welcome dinner and cannot check in that evening.
+2. **Hotel Granvia Kyoto (Corporate Friend Rate inside Kyoto Station)**:
+   - **Locked Group Rate**: **$290 USD per night** total for the group (¥43,500 JPY/night).
+   - **Check-In Policy**: **24-hour front desk check-in**, zero late-arrival penalty, direct elevator access from the train platform.
+3. **Cross Hotel Osaka (Days 4–5 Hold in Dotonbori / Namba)**:
+   - **Locked Group Rate**: **$260 USD per night** total for the group (¥39,000 JPY/night), **24-hour check-in**, 3-minute walk from Dotonbori Canal.

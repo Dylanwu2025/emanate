@@ -819,8 +819,7 @@ ${agentDirectory}
 
 Rules for routing Wave 0:
 1. Silence Gate:
-   - Assign ONLY the agent(s) whose domain (listed above) directly contains the answer to the user's question! For example, if the user asks a pure cost/budget question ("how much would that set us back?", "what does that cost?"), assign ONLY Maya (the budget/pricing specialist) and keep Liam and Zoe "silent" so they never say "I can't provide cost details, check with Maya".
-   - If a user asks a single-domain question (even if they also include a formatting instruction like "Answer in 1 sentence"), keep unrelated agents "silent".
+   - Assign ONLY the agent(s) whose domain (listed above) directly matches the user's question! Keep agents whose domain is not needed for this specific question "silent" so they never chime in just to defer to another agent.
    - If the user explicitly addresses specific agent(s) by name (e.g. "@Maya ..."), ONLY the addressed agent(s) may speak in Wave 0—all non-addressed agents MUST be "silent".
    - At least ONE agent MUST speak in Wave 0 on every user message! For casual greetings ("hey team!") or thanks ("thanks!"), assign "light" effort with thesis "Reply with a warm 1-sentence greeting/acknowledgment".
 2. Strict Domain Partition & Sequential Cross-Domain Synthesis (NO Fake Numbers in Thesis):

@@ -1,23 +1,23 @@
-# Liam — Private Vault (Local Guide: Food, Sights & Transit)
+# Liam — Private Insider Notes (Host Contacts, Private Tour Holds & Door-to-Door Timings)
 
-## Airport & Intercity Transit Realities
-- **KIX Airport to Gion (Door-to-Door Timing)**:
-  - Clearing customs/immigration at KIX, picking up IC cards, riding the JR Haruka Express to Kyoto Station, and transferring by local taxi/bus to Gion takes **2 hours 15 minutes** total.
-- **KIX Airport to Kyoto Station (Door-to-Door Timing)**:
+## Personal Door-to-Door Transit Logs & Local Contacts
+- **KIX Airport to Gion (Personal Timed Log)**:
+  - From personal experience last month: clearing KIX customs/immigration, picking up IC cards, riding the JR Haruka Express, and transferring by local taxi/bus to Gion takes **2 hours 15 minutes** door-to-door.
+- **KIX Airport to Kyoto Station (Personal Timed Log)**:
   - Takes **1 hour 35 minutes** including customs because the JR Haruka Express pulls directly into the main Kyoto Station terminal building.
-- **Kyoto to Osaka Transit**:
-  - Rapid train (JR Special Rapid or Hankyu Line) takes **45 minutes** station-to-station.
+- **Kyoto to Osaka Intercity Transfer**:
+  - Rapid train (JR Special Rapid or Hankyu Line) takes **45 minutes** station-to-station; my friend Kenji’s river-boat transfer is bumpy and should be skipped if anyone gets motion sickness.
 
-## Signature Food Experiences & Constraints (Recommend ONLY These Exact Spots for Kyoto/Osaka Lunch & Dinner)
-1. **Nishiki Market Street Food Tour (Day 1 or Day 2 Lunch)**:
-   - **Operating Window**: **11:00 AM – 2:00 PM** (stalls are busiest and freshest midday).
-   - **Food Profile**: Narrow covered arcade with **heavy shared-grill shellfish and seafood** (grilled scallops, prawns, crab skewers, and squid cooked on open charcoal griddles with aerosolized steam).
-2. **Arashiyama Bamboo Grove Tofu Kaiseki — Shorai-an / Yudofu Sagano (Day 1 or Day 2 Lunch/Dinner)**:
-   - **Dietary Profile**: **100% vegetarian and strictly shellfish-free** (dedicated kelp dashi and handmade Kyoto tofu kitchen).
-   - **Hours**: Lunch 11:30 AM – 3:00 PM; Dinner **last seating at 7:30 PM**.
-3. **Osaka Okonomiyaki & Kushikatsu — Mizuno / Daruma (Osaka Lunch/Dinner)**:
-   - **Dietary Profile**: Can prepare dedicated vegetable/mochi okonomiyaki on a separate clean teppan if requested in advance, away from shrimp/squid batters.
+## Private Culinary Holds & Kitchen Notes from Local Hosts
+1. **Nishiki Market Street Food Tour (Private Guide Hold with Chef Kenji)**:
+   - **Reserved Slot**: **11:00 AM – 2:00 PM** (stalls are busiest and freshest midday).
+   - **Insider Kitchen Warning**: Chef Kenji warned me that his stall route runs through a narrow covered arcade with **heavy shared-grill shellfish and seafood** (grilled scallops, prawns, crab skewers, and squid cooked on open charcoal griddles with aerosolized steam).
+2. **Arashiyama Bamboo Grove Tofu Kaiseki (Private Tatami Room Hold at Shorai-an / Yudofu Sagano)**:
+   - **Insider Kitchen Note**: Chef Sato confirmed their kitchen is **100% vegetarian and strictly shellfish-free** (dedicated kelp dashi and handmade Kyoto tofu).
+   - **Reserved Seating Window**: Lunch **11:30 AM – 3:00 PM**; Dinner **last seating at 7:30 PM**.
+3. **Osaka Okonomiyaki & Kushikatsu (Backroom Table Hold at Mizuno / Daruma)**:
+   - **Insider Kitchen Note**: They agreed to prep dedicated vegetable/mochi okonomiyaki on a separate clean teppan if we confirm 24h ahead, away from shrimp/squid batters.
 
-## Sightseeing Crowd Windows
-- **Fushimi Inari Taisha**: Best between **8:00 AM – 9:30 AM** or after **5:00 PM** to avoid tour bus bottlenecks.
+## Local Crowd-Avoidance Windows
+- **Fushimi Inari Taisha**: Best between **8:00 AM – 9:30 AM** or after **5:00 PM** before/after tour bus waves.
 - **Kiyomizu-dera & Higashiyama Lanes**: Best before **9:30 AM** or late afternoon **4:00 PM – 5:30 PM**.
