@@ -449,10 +449,22 @@ export class GroupChatOrchestrator extends EventEmitter {
     }
 
     // Bug 7 fix: If a turn is currently in its pre-stream routing phase (awaiting routeWave before
-    // activeStreams is populated), immediately abort the pre-stream routing and start/steer with this new message
-    // instead of blocking for the entire previous turn!
+    // activeStreams is populated), wait for routeWave to reserve its streams and then steer them
+    // if this message is a steering instruction, or abort if it's a stop/topic-change!
     if (this.activeTurnPromise && this.turnAbortController && !this.turnAbortController.signal.aborted) {
-      await this.stopAll();
+      if (isExplicitStopCommand(trimmed)) {
+        await this.stopAll();
+      } else {
+        // Wait briefly (up to 1.5s) for Wave 0 streams to be reserved so we can steer them in-place!
+        const waitStart = Date.now();
+        while (!this.isStreaming() && this.turnAbortController && Date.now() - waitStart < 1500) {
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        if (this.isStreaming()) {
+          return this.handleMidStreamUserMessage(trimmed);
+        }
+        await this.stopAll();
+      }
     } else if (this.activeTurnPromise) {
       await this.activeTurnPromise.catch(() => {});
     }

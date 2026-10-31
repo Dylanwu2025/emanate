@@ -117,6 +117,21 @@ export function isCasualSocialMessage(text: string): boolean {
   return CASUAL_SOCIAL_TURN_RE.test(text.trim());
 }
 
+export function isStandaloneStandingRuleMessage(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.includes('?')) return false;
+  const hasQuestionWord =
+    /\b(?:what|when|where|which|who|why|how\s+much|how\s+many|how\s+long|can\s+we|should\s+we|could\s+we|tell\s+me\s+about|give\s+(?:me|us)\s+a\s+breakdown)\b/i.test(
+      trimmed,
+    );
+  if (hasQuestionWord) return false;
+  const mentioned = extractMentionedAgents(trimmed);
+  return Boolean(
+    extractStandingRuleDeterministic(trimmed, mentioned) ||
+      detectRuleClearScope(trimmed, mentioned),
+  );
+}
+
 export function getDomainSafeThesisFallback(
   agentId: AgentId,
   runtimeConfig?: CustomAgentRuntimeConfig,
@@ -740,7 +755,13 @@ Return strict JSON:
       }
     }
 
-    if (isFollowUpWave && !isMock && (isCasualSocialMessage(lastUserMessageContent) || isGeneralRecapQuery(lastUserMessageContent))) {
+    if (
+      isFollowUpWave &&
+      !isMock &&
+      (isCasualSocialMessage(lastUserMessageContent) ||
+        isGeneralRecapQuery(lastUserMessageContent) ||
+        isStandaloneStandingRuleMessage(lastUserMessageContent))
+    ) {
       return {
         waveIndex,
         isResolved: true,
@@ -882,9 +903,13 @@ Return strict JSON:
         const priorThesesForAgent = turnThesesByAgent[agentId] ?? [];
 
         if (!isMock && priorMsgsForAgent.length > 0) {
+          const alreadyListedMultipleOptions = priorMsgsForAgent.some(
+            (msg) => (msg.match(/\*\*[^*]+\*\*/g) ?? []).length >= 3,
+          );
           const isMayaPivotingAfterPeer =
             agentId === 'maya' &&
             priorMsgsForAgent.length === 1 &&
+            !alreadyListedMultipleOptions &&
             inferredPrevSpeakers.some((id) => id !== 'maya');
           if (!isMayaPivotingAfterPeer) {
             rawDecisions[agentId] = { effort: 'silent', thesis: '' };
@@ -935,7 +960,19 @@ Return strict JSON:
       const anySpeaking = AGENT_IDS.some((id) => rawDecisions[id].effort !== 'silent');
       const mentioned = extractMentionedAgents(referenceText, runtimeConfig);
 
-      if (!isMock && isCasualSocialMessage(referenceText)) {
+      if (!isMock && isStandaloneStandingRuleMessage(referenceText)) {
+        const targetAckAgent: AgentId = mentioned[0] ?? 'maya';
+        for (const id of AGENT_IDS) {
+          rawDecisions[id] =
+            id === targetAckAgent
+              ? {
+                  effort: 'light',
+                  thesis:
+                    'Briefly acknowledge the new standing instruction in 1 short sentence ( obeying its format ) without repeating previous answers.',
+                }
+              : { effort: 'silent', thesis: '' };
+        }
+      } else if (!isMock && isCasualSocialMessage(referenceText)) {
         for (const id of AGENT_IDS) {
           if (rawDecisions[id].effort !== 'silent') {
             rawDecisions[id] = {
