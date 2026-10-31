@@ -31,13 +31,6 @@ Speaking agents reserve a `seq`, then stream in parallel. A **wave barrier** wai
 
 ![Turn lifecycle: user message, route wave, parallel streams, wave barrier, follow-up check looping at most five times, then idle](docs/turn-lifecycle.svg)
 
-| Effort | What it does | Max tokens |
-| --- | --- | ---: |
-| silent | No message created | — |
-| light | One short sentence | 120 |
-| standard | A few sentences | 320 |
-| deep | Detailed synthesis | 800 |
-
 ## Steering
 
 If you send a message while agents are still streaming, it is classified as one of:
