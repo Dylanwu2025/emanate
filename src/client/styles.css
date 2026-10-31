@@ -337,9 +337,48 @@ body {
   border-radius: 15px;
   font-size: 0.93rem;
   line-height: 1.52;
-  white-space: pre-wrap;
+  white-space: normal;
   word-wrap: break-word;
   box-shadow: var(--shadow-sm);
+}
+
+.message-bubble p {
+  margin: 0 0 8px 0;
+}
+
+.message-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.message-bubble ul,
+.message-bubble ol {
+  margin: 4px 0 8px 20px;
+  padding: 0;
+}
+
+.message-bubble ul:last-child,
+.message-bubble ol:last-child {
+  margin-bottom: 0;
+}
+
+.message-bubble li {
+  margin-bottom: 3px;
+}
+
+.message-bubble li:last-child {
+  margin-bottom: 0;
+}
+
+.message-bubble code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.role-user .message-bubble code {
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .role-user .message-bubble {

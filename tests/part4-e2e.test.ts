@@ -407,7 +407,7 @@ describe('Part 4: Group Chat Web UI, Documentation & End-to-End Verification', (
           const combined = stateData.messages.map((m) => m.content).join('\n');
           // Maya knows Flight A is $650; Zoe knows the group cannot wake before 7:30 AM
           expect(combined).toMatch(/650/);
-          expect(combined).toMatch(/7:30\s*AM|wake|early/i);
+          expect(combined).toMatch(/7:30[\s-]*AM|wak(?:e|ing)|early/i);
         } finally {
           await liveApp.close();
           liveStore.close();

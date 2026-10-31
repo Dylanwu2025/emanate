@@ -124,7 +124,7 @@ function createMessageElement(msg) {
 
     const bubbleEl = document.createElement('div');
     bubbleEl.className = 'message-bubble';
-    bubbleEl.textContent = msg.content;
+    updateBubbleContent(bubbleEl, msg);
     wrapEl.appendChild(bubbleEl);
 
     rowEl.appendChild(wrapEl);
@@ -133,14 +133,110 @@ function createMessageElement(msg) {
   return rowEl;
 }
 
+function escapeHtml(raw) {
+  return String(raw)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderInlineMarkdown(escapedLine) {
+  return escapedLine
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+}
+
+function renderMarkdownSafe(rawText) {
+  if (!rawText) return '';
+  const escaped = escapeHtml(rawText);
+  const lines = escaped.split(/\r?\n/);
+
+  const htmlParts = [];
+  let inUl = false;
+  let inOl = false;
+  let paragraphLines = [];
+
+  const flushParagraph = () => {
+    if (paragraphLines.length > 0) {
+      htmlParts.push(`<p>${paragraphLines.join('<br/>')}</p>`);
+      paragraphLines = [];
+    }
+  };
+
+  const closeLists = () => {
+    if (inUl) {
+      htmlParts.push('</ul>');
+      inUl = false;
+    }
+    if (inOl) {
+      htmlParts.push('</ol>');
+      inOl = false;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      flushParagraph();
+      closeLists();
+      continue;
+    }
+
+    const ulMatch = rawLine.match(/^\s*[-*•]\s+(.*)$/);
+    if (ulMatch) {
+      flushParagraph();
+      if (inOl) {
+        htmlParts.push('</ol>');
+        inOl = false;
+      }
+      if (!inUl) {
+        htmlParts.push('<ul>');
+        inUl = true;
+      }
+      htmlParts.push(`<li>${renderInlineMarkdown(ulMatch[1])}</li>`);
+      continue;
+    }
+
+    const olMatch = rawLine.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (olMatch) {
+      flushParagraph();
+      if (inUl) {
+        htmlParts.push('</ul>');
+        inUl = false;
+      }
+      if (!inOl) {
+        htmlParts.push('<ol>');
+        inOl = true;
+      }
+      htmlParts.push(`<li>${renderInlineMarkdown(olMatch[1])}</li>`);
+      continue;
+    }
+
+    closeLists();
+    paragraphLines.push(renderInlineMarkdown(rawLine));
+  }
+
+  flushParagraph();
+  closeLists();
+  return htmlParts.join('');
+}
+
 function updateBubbleContent(bubbleEl, msg) {
-  bubbleEl.textContent = msg.content || '';
+  bubbleEl.innerHTML = renderMarkdownSafe(msg.content || '');
   if (msg.status === 'streaming') {
     const dots = document.createElement('span');
     dots.className = 'typing-dots';
     dots.setAttribute('aria-hidden', 'true');
     dots.innerHTML = '<span></span><span></span><span></span>';
-    bubbleEl.appendChild(dots);
+    const lastBlock = bubbleEl.lastElementChild;
+    if (lastBlock && (lastBlock.tagName === 'P' || lastBlock.tagName === 'LI')) {
+      lastBlock.appendChild(dots);
+    } else {
+      bubbleEl.appendChild(dots);
+    }
   }
 }
 

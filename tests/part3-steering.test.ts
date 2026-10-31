@@ -343,6 +343,22 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
         ),
       ).toBe('—which is ¥123,000 in JPY.');
 
+      // Dangling bullet marker at end of flushedContent + leading bullet in continuation -> never "-- **"
+      expect(
+        normalizeContinuationSeam(
+          '- **Ryokan Gion**: $380/night, strict 6:00 PM check-in cutoff.\n-',
+          '- **Hotel Granvia Kyoto**: ¥43,500/night with 24-hour check-in.',
+        ),
+      ).toBe(' **Hotel Granvia Kyoto**: ¥43,500/night with 24-hour check-in.');
+
+      // Completed sentence + leading bullet in continuation -> placed on a clean newline
+      expect(
+        normalizeContinuationSeam(
+          'In JPY, Flight A is ¥97,500 and Flight B is ¥123,000.',
+          '- **Hotel Granvia Kyoto**: ¥43,500/night.',
+        ),
+      ).toBe('\n- **Hotel Granvia Kyoto**: ¥43,500/night.');
+
       // 2. Test epoch guard rejecting zombie tokens from an older epoch
       const orchestrator = new GroupChatOrchestrator({ store, llm: mockLLM });
       mockLLM.enqueueJSON({
@@ -727,6 +743,10 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
         const continuationSuffix = mayaMessages[0].content.slice(mayaPrefixSnapshot.trimEnd().length);
         expect(continuationSuffix.length).toBeGreaterThan(10);
         expect(continuationSuffix).toMatch(/¥|JPY|Yen|97,500|123,000|57,000|43,500/i);
+        expect(mayaMessages[0].content).not.toContain('-- **');
+        if (/[-*]\s+\*\*Flight A/i.test(mayaPrefixSnapshot)) {
+          expect(continuationSuffix).not.toMatch(/[-*]\s+\*\*Flight A/i);
+        }
 
         // Liam completed his message uninterrupted
         expect(liamMessages).toHaveLength(1);

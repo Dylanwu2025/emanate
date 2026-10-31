@@ -101,7 +101,9 @@ export function buildConversationHistoryForAgent(
 
 const LEFT_BOUNDARY_RE = /[\s,.;:!?—–\-(\[{"'/$¥€£]/;
 const RIGHT_BOUNDARY_RE = /[\s,.;:!?—–\-)\]}"']/;
-const LEADING_PUNCTUATION_RE = /^[,.;:!?—–\-)\]}]/;
+const INLINE_LEADING_PUNCTUATION_RE = /^[,.;:!?—–)\]}]/;
+const LEADING_BULLET_RE = /^[-*•]\s+/;
+const DANGLING_BULLET_AT_END_RE = /(?:^|\n)\s*[-*•]\s*$/;
 
 export function normalizeContinuationSeam(
   flushedContent: string,
@@ -154,7 +156,7 @@ export function normalizeContinuationSeam(
     }
   }
 
-  const stripped =
+  let stripped =
     matchedOverlapLen > 0
       ? contTrimmed.slice(matchedOverlapLen).trimStart()
       : contTrimmed;
@@ -163,12 +165,32 @@ export function normalizeContinuationSeam(
     return '';
   }
 
+  // If flushedContent ended with a dangling list bullet (e.g. "\n-" or "\n- ")
+  // and the continuation also starts with a list bullet ("- "), strip the duplicate bullet marker
+  // so we never produce "-- **Flight A"
+  if (DANGLING_BULLET_AT_END_RE.test(flushedContent) && LEADING_BULLET_RE.test(stripped)) {
+    stripped = stripped.replace(LEADING_BULLET_RE, '');
+    if (!stripped) return '';
+    return /\s$/.test(flushedContent) ? stripped : ` ${stripped}`;
+  }
+
+  // If the continuation starts with a markdown bullet ("- item") after a completed line/sentence,
+  // place it on a clean newline instead of gluing it inline
+  if (LEADING_BULLET_RE.test(stripped)) {
+    return /\n\s*$/.test(flushedContent) ? stripped : `\n${stripped}`;
+  }
+
   const flushedEndsWithSpace = /\s$/.test(flushedContent);
   if (flushedEndsWithSpace) {
     return stripped;
   }
 
-  if (LEADING_PUNCTUATION_RE.test(stripped)) {
+  if (INLINE_LEADING_PUNCTUATION_RE.test(stripped)) {
+    return stripped;
+  }
+
+  // Allow em-dash/hyphen clause connectors like "—which is..." or "- which is..." when not a list bullet
+  if (/^[—–]/.test(stripped)) {
     return stripped;
   }
 
@@ -901,6 +923,18 @@ export class GroupChatOrchestrator extends EventEmitter {
           ...(conversationHistory.length > 0
             ? conversationHistory
             : [{ role: 'user' as const, content: 'Please share your perspective.' }]),
+          ...(currentContinuation
+            ? [
+                {
+                  role: 'assistant' as const,
+                  content: currentContinuation.flushedSnapshot,
+                },
+                {
+                  role: 'user' as const,
+                  content: `[Live Redirect: "${currentContinuation.directive}"] Continue directly from the exact end of your partial message above. Do NOT repeat or re-list any bullet headers already written in your partial message above—if converting currency/format for already-mentioned items, state their converted figures in 1 brief clause, then finish ONLY the remaining unstated items in your own domain. Output ONLY the continuation suffix.`,
+                },
+              ]
+            : []),
         ];
 
         const flushedBeforeContinuation = currentContinuation

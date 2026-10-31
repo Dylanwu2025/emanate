@@ -92,8 +92,17 @@ const THESIS_STOPWORDS = new Set([
   'kyoto', 'osaka', 'trip', 'group', 'share', 'explain', 'state', 'provide',
   'discuss', 'mention', 'note', 'cover', 'answer', 'question', 'details', 'info',
   'option', 'options', 'confirm', 'choose', 'prefer', 'preferred', 'finalize',
-  'travel', 'plans', 'plan', 'between', 'recommend', 'stay',
+  'travel', 'plans', 'plan', 'between', 'recommend', 'stay', 'summarize', 'summary',
+  'recap', 'current', 'status', 'itinerary', 'decide', 'decisions', 'decision',
+  'pending', 'need', 'needed', 'far', 'overall', 'update', 'outline', 'review',
+  'agreed', 'chosen', 'next', 'steps',
 ]);
+
+const GENERAL_RECAP_RE =
+  /\b(summarize|summary|recap|plan\s+so\s+far|plans\s+so\s+far|current\s+(?:travel\s+|trip\s+)?(?:plan|itinerary|status)|what\s+(?:we\s+)?need\s+to\s+decide|pending\s+decisions|open\s+decisions|decisions\s+needed)\b/i;
+
+const SPECIFIC_CONSTRAINT_CUE_RE =
+  /\b(shellfish|allergy|anaphylactic|epipen|vegetarian|priya|sam|7:30|wake|motion\s+sickness|2\s*hours?\s*15|2h\s*15m|1\s*hour\s*35|1h\s*35m|6:00\s*pm\s*cutoff|haruka|fushimi|kiyomizu|okonomiyaki)\b/i;
 
 function normalizeThesisTokens(thesis: string): Set<string> {
   const words = thesis
@@ -110,6 +119,16 @@ export function areThesesRedundant(earlierThesis: string, laterThesis: string): 
   if (!normLater) return true;
   if (normEarlier === normLater) return true;
   if (normEarlier.includes(normLater) || normLater.includes(normEarlier)) {
+    return true;
+  }
+
+  // If an earlier speaker is already doing a general plan/decision recap and the later speaker's
+  // thesis is ALSO a generic plan/decision recap without a specific new domain constraint, silence it.
+  if (
+    GENERAL_RECAP_RE.test(normEarlier) &&
+    GENERAL_RECAP_RE.test(normLater) &&
+    !SPECIFIC_CONSTRAINT_CUE_RE.test(normLater)
+  ) {
     return true;
   }
 
@@ -131,7 +150,7 @@ export function areThesesRedundant(earlierThesis: string, laterThesis: string): 
 
   const ratioLater = overlap / laterTokens.size;
   const ratioEarlier = overlap / earlierTokens.size;
-  return overlap >= 3 && (ratioLater >= 0.75 || ratioEarlier >= 0.75);
+  return (overlap >= 3 && (ratioLater >= 0.7 || ratioEarlier >= 0.7)) || ratioLater >= 0.85;
 }
 
 /**
@@ -638,16 +657,22 @@ Return strict JSON:
 - zoe (Zoe — Group Dynamics, Dietary & Pacing: private vault has Sam's severe shellfish allergy & bus/boat motion sickness, Priya's strict vegetarianism, and the group's no-waking-before-7:30-AM rule which rules out 6:45 AM Flight A).
 
 Rules for routing Wave 0:
-1. Silence Gate: If an agent's domain is not relevant to the user's message, set their effort to "silent" and thesis to "".
-2. Cross-Domain Awareness:
-   - When the user asks about flights or travel plans, Maya should cover the flight options/prices AND Zoe should also speak (or follow up) if 6:45 AM Flight A is on the table, since Zoe's vault has the group's no-waking-before-7:30-AM rule.
-   - When the user asks about food/dining (like Nishiki Market), both Liam (food/hours) and Zoe (Sam's shellfish allergy & Priya's vegetarian diet) are relevant.
-   - When the user asks a narrow single-agent question (e.g. "@Maya what is the total budget?"), only that agent speaks.
-3. Effort Calibration:
-   - "light": Simple factual check or quick confirmation (1 short sentence).
+1. Silence Gate: If an agent's domain is not relevant to the user's message, or if their point would duplicate another speaking agent, set their effort to "silent" and thesis to "".
+2. Strict Domain Partition (NO Cross-Domain Summaries):
+   - Every speaking agent's "thesis" MUST be strictly confined to their own exclusive domain:
+     * maya: ONLY flights (Flight A, Flight B), lodging/hotels (Ryokan Gion, Hotel Granvia, Cross Hotel Osaka), and budget numbers. NEVER food or sightseeing.
+     * liam: ONLY airport/city transit timing, food/restaurants (Nishiki Market, Shorai-an/Yudofu Sagano, Okonomiyaki), and sightseeing. NEVER flights or hotel bookings.
+     * zoe: ONLY group allergies/dietary restrictions (Sam's shellfish allergy, Priya's vegetarianism) and sleep/pacing rules (no waking before 7:30 AM). NEVER flight/hotel recaps.
+   - For general recap/status questions (e.g., "what's our plan so far and what do we need to decide?"):
+     * NEVER assign multiple agents to "summarize the plan so far and what to decide".
+     * If Maya covers the flight & hotel status/decisions, Liam may ONLY speak if he is adding a brief 1-sentence note strictly on food/transit (or stay "silent" if meals were already settled), and Zoe MUST be "silent" UNLESS she is flagging an unaddressed safety/allergy conflict (e.g. warning that Nishiki Market has shared seafood grills unsafe for Sam's severe shellfish allergy).
+3. Cross-Domain Awareness:
+   - When the user asks about flights, Maya covers flight options/prices and Zoe only speaks if 6:45 AM Flight A needs to be vetoed due to the 7:30 AM wakeup rule.
+   - When the user asks about a narrow single-agent topic (e.g. "@Maya what is the total budget?"), only that agent speaks.
+4. Effort Calibration:
+   - "light": Simple factual check, quick domain note, or secondary speaker in a recap (1 short sentence).
    - "standard": Moderate multi-fact answer (2–4 sentences).
-   - "deep": Complex trade-off or full itinerary/budget breakdown.
-4. Distinct Theses: Each speaking agent MUST have a distinct 1-line "thesis" focused strictly on their own private domain so agents never repeat each other.
+   - "deep": Complex trade-off or full breakdown.
 5. Standing Rule Extraction: If the user message establishes a persistent instruction for how agents should respond (e.g. "Always answer in bullet points", "Maya, quote all prices in JPY from now on"), return it in "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": "..." }, otherwise null.
 
 Return strict JSON:

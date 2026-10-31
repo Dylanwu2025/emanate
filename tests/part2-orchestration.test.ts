@@ -163,6 +163,35 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
       expect(liamSysPrompt).toContain(
         'Maya is covering: Cover Flight B $820 price and Ryokan Gion 6:00 PM check-in cutoff',
       );
+      expect(liamSysPrompt).toContain(
+        'NEVER list, summarize, or repeat flight options/prices or hotel bookings/nightly rates/check-in policies',
+      );
+    });
+
+    it('silences generic duplicate recap theses on summary questions while keeping distinct domain conflict theses', () => {
+      const { decisions, speakers } = applyAsymmetricDedup(
+        {
+          maya: {
+            effort: 'standard',
+            thesis: 'Summarize the plan so far and what we need to decide for flights and hotels',
+          },
+          liam: {
+            effort: 'standard',
+            // Generic duplicate recap thesis without a specific new constraint -> silenced!
+            thesis: 'Summarize the current travel plan so far and pending decisions',
+          },
+          zoe: {
+            effort: 'light',
+            // Specific domain safety constraint -> kept!
+            thesis: 'Warn that Nishiki Market shared grills conflict with Sam shellfish allergy',
+          },
+        },
+        ['maya', 'liam', 'zoe'],
+      );
+
+      expect(decisions.liam.effort).toBe('silent');
+      expect(decisions.zoe.effort).toBe('light');
+      expect(speakers.map((s) => s.agentId)).toEqual(['maya', 'zoe']);
     });
   });
 
@@ -601,8 +630,39 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
         }
         const mayaCount = speakerSequence.filter((id) => id === 'maya').length;
         expect(mayaCount).toBe(1);
+
+        // Regression check for multi-turn conversation followed by:
+        // "what's our plan so far and what do we need to decide"
+        // Seed prior agreed context (Flight B + Hotel Granvia + Day 2 Nishiki/Shorai-an)
+        store.reserveMessage({
+          role: 'user',
+          content: 'Let us go with Flight B and Hotel Granvia, plus Nishiki Market lunch and Shorai-an dinner on Day 2.',
+        });
+        store.reserveMessage({
+          role: 'agent',
+          agentId: 'maya',
+          content: 'Sounds great—Flight B ($820/person, lands 3:45 PM) and Hotel Granvia ($290/night, 24h check-in) are noted.',
+          status: 'completed',
+        });
+
+        const recapRes = await orchestrator.handleUserMessage(
+          "what's our plan so far and what do we need to decide",
+        );
+        expect(recapRes.agentMessages.length).toBeGreaterThanOrEqual(1);
+
+        // Verify strict domain lanes: Liam and Zoe must NEVER re-list Flight B or Hotel Granvia when Maya covers flights/lodging
+        const mayaRecap = recapRes.agentMessages.find((m) => m.agentId === 'maya');
+        const liamRecap = recapRes.agentMessages.find((m) => m.agentId === 'liam');
+        const zoeRecap = recapRes.agentMessages.find((m) => m.agentId === 'zoe');
+
+        if (mayaRecap && liamRecap) {
+          expect(liamRecap.content).not.toMatch(/Flight\s*B|JL-701|Hotel\s*Granvia/i);
+        }
+        if (mayaRecap && zoeRecap) {
+          expect(zoeRecap.content).not.toMatch(/Hotel\s*Granvia/i);
+        }
       },
-      60000,
+      75000,
     );
   });
 });

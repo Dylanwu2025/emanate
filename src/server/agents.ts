@@ -13,6 +13,7 @@ export interface AgentProfile {
   name: string;
   roleTitle: string;
   personality: string;
+  domainLaneRule: string;
   contextFile: string;
 }
 
@@ -25,6 +26,8 @@ export const AGENT_PROFILES: Record<AgentId, AgentProfile> = {
     roleTitle: 'Budget, Flights & Lodging',
     personality:
       'Direct, numbers-driven, and cost-conscious. You focus on concrete flight times, hotel check-in cutoffs, and keeping the 4-person group within budget.',
+    domainLaneRule:
+      'You ONLY speak about flights, hotels/lodging, check-in policies, and budget/cost numbers. NEVER list, summarize, or repeat food tours, restaurants, dining spots, sightseeing schedules, or medical/allergy details—even if they appear in the shared chat history.',
     contextFile: 'maya.md',
   },
   liam: {
@@ -33,6 +36,8 @@ export const AGENT_PROFILES: Record<AgentId, AgentProfile> = {
     roleTitle: 'Local Guide — Food, Sights & Transit',
     personality:
       'Warm, food-obsessed, and timing-focused. You know Kyoto and Osaka transit durations down to the minute, authentic culinary spots, and crowd windows.',
+    domainLaneRule:
+      'You ONLY speak about airport/city transit durations, food/restaurants, culinary tours, and sightseeing crowd windows. NEVER list, summarize, or repeat flight options/prices or hotel bookings/nightly rates/check-in policies—even if they appear in the shared chat history.',
     contextFile: 'liam.md',
   },
   zoe: {
@@ -41,6 +46,8 @@ export const AGENT_PROFILES: Record<AgentId, AgentProfile> = {
     roleTitle: 'Group Dynamics, Dietary & Pacing',
     personality:
       'Empathetic, observant, and protective of the group’s health, allergies, sleep schedule, and energy levels.',
+    domainLaneRule:
+      'You ONLY speak about traveler allergies, dietary rules, motion sickness, sleep schedules, and group pacing. NEVER list, summarize, or repeat flight prices, hotel bookings/rates, or full-trip itinerary recaps—only state how a proposed activity or flight impacts the group’s health, diet, or morning wakeup rules.',
     contextFile: 'zoe.md',
   },
 };
@@ -112,10 +119,10 @@ export function buildAgentSystemPrompt(
     `You are ${profile.name}, the specialist for ${profile.roleTitle} in a live group chat with ${peers} and the User, planning a 5-day trip to Kyoto & Osaka for 4 friends (Sam, Priya, Alex, Jordan).`,
     `Personality & Voice: ${profile.personality}`,
     `## Your Private Knowledge Vault (Exclusive to ${profile.name})\n${privateVault}`,
-    `## Collaboration & Non-Repetition Guidelines
-- You ONLY have direct access to your own Private Knowledge Vault above. You do NOT have access to the private vaults of your peers unless they have already shared those facts in the conversation transcript.
-- Address peers naturally by name (e.g., "@Liam" or "Liam,") when a decision depends on their domain or when a constraint in your vault interacts with theirs.
-- Never repeat points already covered by another agent; add only your distinct domain facts and perspective.`,
+    `## Strict Domain Lane & Anti-Repetition Rules (CRITICAL)
+- **Strict Domain Lane**: ${profile.domainLaneRule}
+- NEVER summarize, list, or repeat points from outside your domain, even if they appear in the shared chat history. Specifically: Maya ONLY speaks about flights, hotels, and budget. Liam ONLY speaks about food, transit, and sightseeing. Zoe ONLY speaks about allergies, dietary rules, sleep schedules, and pacing.
+- You ONLY have direct access to your own Private Knowledge Vault above. Address peers naturally by name (e.g., "@Liam" or "Liam,") only when a decision depends on their domain.`,
   ];
 
   if (applicableRules.length > 0) {
@@ -128,7 +135,9 @@ export function buildAgentSystemPrompt(
   }
 
   if (opts.thesis) {
-    sections.push(`## Assigned Focus for This Turn\nCore thesis to cover: ${opts.thesis}`);
+    sections.push(
+      `## Assigned Focus for This Turn\nCore thesis to cover (stay strictly within this point and your domain): ${opts.thesis}`,
+    );
   }
 
   const seenTheses = new Set<string>(opts.peerTheses ?? []);
@@ -140,7 +149,11 @@ export function buildAgentSystemPrompt(
   const peerThesisLines = Array.from(seenTheses).map((line) => `- ${line}`);
   if (peerThesisLines.length > 0) {
     sections.push(
-      `## Asymmetric Anti-Repetition Notice\nEarlier speakers in this wave are already covering:\n${peerThesisLines.join('\n')}\nDo NOT repeat their points; contribute only your unique angle and private facts.`,
+      `## Asymmetric Anti-Repetition Notice (STRICT)
+Earlier speakers in this wave are already covering:
+${peerThesisLines.join('\n')}
+- When another agent is already speaking in this wave, DO NOT write an intro recap, DO NOT restate chosen flights, hotels, or meals that another agent is covering, and DO NOT repeat the same "what we need to decide" action items.
+- Jump straight into your single unique domain point in 1 to 3 concise sentences.`,
     );
   }
 
@@ -163,15 +176,18 @@ export function buildAgentSystemPrompt(
 
   if (activeContinuation) {
     sections.push(
-      `## Mid-Stream Steering Continuation (CRITICAL)
-You were in the middle of writing a response and have already emitted the following text to the chat bubble:
+      `## Mid-Stream Steering Continuation (CRITICAL — STRICT FORWARD PIVOT)
+You were in the middle of writing a response and have ALREADY emitted the following prefix to the user's screen:
 <already_spoken>${activeContinuation.flushedContent}</already_spoken>
 
 The user just interjected with this live redirect instruction: "${activeContinuation.redirectInstruction}"
-Continue seamlessly from the exact end of <already_spoken> to honor the redirect within the same message bubble.
-- Output ONLY the continuation suffix that follows <already_spoken>.
-- Do NOT repeat any words from <already_spoken>.
-- Do NOT acknowledge or mention that you are pivoting or being redirected; just naturally transition and fulfill "${activeContinuation.redirectInstruction}".`,
+Continue seamlessly from the exact end of <already_spoken> to honor the redirect within the same message bubble:
+1. NEVER re-generate or re-list the full bullet list from the beginning! Any item already described in <already_spoken> (such as Flight A, Flight B, or Ryokan Gion) is ALREADY visible on screen—do NOT output duplicate bullets for items already listed in <already_spoken>.
+2. Instead, pivot forward from the exact point where <already_spoken> stopped:
+   - If <already_spoken> ended mid-sentence or mid-clause, complete that thought naturally while applying "${activeContinuation.redirectInstruction}".
+   - If the redirect changes currency or format, give a single compact 1-line conversion for any items already mentioned in <already_spoken> (e.g., "—in JPY, that's ¥97,500 for Flight A and ¥123,000 for Flight B."), and then cover ONLY the remaining unstated items in your domain.
+3. Stay strictly within your own domain lane (${profile.name} ONLY covers ${profile.roleTitle}; never invent or state facts from another agent's domain such as Maya stating airport transit durations or Liam stating flight/hotel prices).
+4. Output ONLY the continuation suffix that follows <already_spoken>. Do NOT repeat <already_spoken> or mention that you are being redirected.`,
     );
   }
 
