@@ -10,13 +10,13 @@
 
 ## Private Culinary Holds & Kitchen Notes from Local Hosts
 1. **Nishiki Market Street Food Tour (Private Guide Hold with Chef Kenji)**:
+   - **What’s Served & Insider Kitchen Warning (MUST MENTION WHEN DISCUSSING NISHIKI)**: Chef Kenji’s route runs through a narrow covered walkway where stalls cook **heavy shared-grill shellfish and seafood** (grilled scallops, prawns, crab skewers, and squid over open charcoal griddles with heavy shellfish steam; **cannot guarantee a shellfish-free or vegetarian-isolated grill**).
    - **Reserved Slot**: **11:00 AM – 2:00 PM** (stalls are busiest and freshest midday).
-   - **Insider Kitchen Warning**: Chef Kenji warned me that his stall route runs through a narrow covered arcade with **heavy shared-grill shellfish and seafood** (grilled scallops, prawns, crab skewers, and squid cooked on open charcoal griddles with aerosolized steam).
 2. **Arashiyama Bamboo Grove Tofu Kaiseki (Private Tatami Room Hold at Shorai-an / Yudofu Sagano)**:
-   - **Insider Kitchen Note**: Chef Sato confirmed their kitchen is **100% vegetarian and strictly shellfish-free** (dedicated kelp dashi and handmade Kyoto tofu).
+   - **What’s Served & Insider Kitchen Note (MUST MENTION WHEN DISCUSSING SHORAI-AN)**: Chef Sato confirmed their kitchen is **100% vegetarian, strictly plant-based, and 100% shellfish-free** (dedicated kombu kelp dashi with zero fish/bonito flakes and handmade Kyoto tofu).
    - **Reserved Seating Window**: Lunch **11:30 AM – 3:00 PM**; Dinner **last seating at 7:30 PM**.
 3. **Osaka Okonomiyaki & Kushikatsu (Backroom Table Hold at Mizuno / Daruma)**:
-   - **Insider Kitchen Note**: They agreed to prep dedicated vegetable/mochi okonomiyaki on a separate clean teppan if we confirm 24h ahead, away from shrimp/squid batters.
+   - **What’s Served & Insider Kitchen Note**: They agreed to prep **dedicated vegetable/mochi okonomiyaki on a separate clean teppan** (100% vegetarian and shellfish-safe if we confirm 24h ahead, isolated from shrimp/squid batters).
 
 ## Local Crowd-Avoidance Windows
 - **Fushimi Inari Taisha**: Best between **8:00 AM – 9:30 AM** or after **5:00 PM** before/after tour bus waves.

@@ -975,10 +975,24 @@ Return strict JSON:
     };
 
     if (isFollowUpWave) {
-      if (inferredPrevSpeakers.length === 1) {
+      // Rule 1: No agent who just spoke in Wave N-1 can speak again in Wave N (zero consecutive self-replies)
+      if (!isMock) {
+        for (const prevSpeaker of inferredPrevSpeakers) {
+          rawDecisions[prevSpeaker] = { effort: 'silent', thesis: '' };
+        }
+      } else if (inferredPrevSpeakers.length === 1) {
         const solePrevSpeaker = inferredPrevSpeakers[0];
         rawDecisions[solePrevSpeaker] = { effort: 'silent', thesis: '' };
       }
+
+      const prevWaveMsgs = currentTurnAgentMsgs.filter((m) =>
+        inferredPrevSpeakers.includes(m.agent_id!),
+      );
+      const prevWaveCombinedText = prevWaveMsgs.map((m) => m.content).join('\n');
+      const prevWaveHasQuestionOrVeto =
+        /[?]|\b(?:what\s+about|alternative|instead|avoid|veto(?:ed)?|unsafe|risk|cannot|can't|isn't\s+suitable|not\s+suitable|won't\s+work|conflicts?\s+with|rules?\s+out|miss\s+the\s+check-?in)\b/i.test(
+          prevWaveCombinedText,
+        );
 
       for (const agentId of AGENT_IDS) {
         if (rawDecisions[agentId].effort === 'silent') continue;
@@ -988,7 +1002,18 @@ Return strict JSON:
           .map((m) => m.content);
         const priorThesesForAgent = turnThesesByAgent[agentId] ?? [];
 
+        const wasTaggedInPrevWave = prevWaveMsgs.some((m) =>
+          extractMentionedAgents(m.content, runtimeConfig).includes(agentId),
+        );
+
         if (!isMock && priorMsgsForAgent.length > 0) {
+          // Never allow an agent to speak a 3rd time in the same turn, and never allow
+          // a second speech in Wave 3+ (Wave 2 is the final synthesis/pivot wave for Wave 0 speakers).
+          if (priorMsgsForAgent.length >= 2 || waveIndex >= 3) {
+            rawDecisions[agentId] = { effort: 'silent', thesis: '' };
+            continue;
+          }
+
           const alreadyListedMultipleOptions = priorMsgsForAgent.some(
             (msg) => (msg.match(/\*\*[^*]+\*\*/g) ?? []).length >= 3,
           );
@@ -996,14 +1021,22 @@ Return strict JSON:
             agentId === 'maya' &&
             priorMsgsForAgent.length === 1 &&
             !alreadyListedMultipleOptions &&
+            prevWaveHasQuestionOrVeto &&
             inferredPrevSpeakers.some((id) => id !== 'maya');
-          if (!isMayaPivotingAfterPeer) {
+          const isTaggedPeerReplyingToQuestionOrVeto =
+            wasTaggedInPrevWave &&
+            priorMsgsForAgent.length === 1 &&
+            !inferredPrevSpeakers.includes(agentId) &&
+            prevWaveHasQuestionOrVeto;
+
+          if (!isMayaPivotingAfterPeer && !isTaggedPeerReplyingToQuestionOrVeto) {
             rawDecisions[agentId] = { effort: 'silent', thesis: '' };
             continue;
           }
         }
 
         if (
+          !(wasTaggedInPrevWave && prevWaveHasQuestionOrVeto && priorMsgsForAgent.length === 1 && waveIndex <= 2) &&
           (priorMsgsForAgent.length > 0 || priorThesesForAgent.length > 0) &&
           isSelfRepetitiveForAgent(
             rawDecisions[agentId].thesis,
@@ -1016,24 +1049,38 @@ Return strict JSON:
       }
 
       // Deterministic A2A peer-mention & handoff check:
-      // If a speaker in Wave N-1 explicitly @mentioned or deferred to a peer who hasn't spoken yet
-      // in this turn (e.g. "@Maya how much does that cost?" or "check with Maya"), ensure that peer speaks!
+      // 1. If a speaker in Wave N-1 explicitly @mentioned or deferred to a peer who hasn't spoken yet
+      //    in this turn (e.g. "@Maya how much does that cost?"), ensure that peer speaks!
+      // 2. If in Wave 2 (after Wave 1), a speaker in Wave 1 explicitly @mentioned a Wave 0 speaker
+      //    AND raised a question or vetoed one of their options (e.g. "@Liam Nishiki is unsafe for Sam"),
+      //    allow that Wave 0 speaker to reply once in Wave 2 with a concrete alternative!
       if (!isMock) {
-        const prevWaveMsgs = currentTurnAgentMsgs.filter((m) =>
-          inferredPrevSpeakers.includes(m.agent_id!),
-        );
         for (const msg of prevWaveMsgs) {
           const peerMentions = extractMentionedAgents(msg.content, runtimeConfig).filter(
-            (id) => id !== msg.agent_id,
+            (id) => id !== msg.agent_id && !inferredPrevSpeakers.includes(id),
           );
           for (const targetPeerId of peerMentions) {
-            const peerAlreadySpokeInTurn = currentTurnAgentMsgs.some(
+            const priorCount = currentTurnAgentMsgs.filter(
               (m) => m.agent_id === targetPeerId,
-            );
-            if (!peerAlreadySpokeInTurn && rawDecisions[targetPeerId].effort === 'silent') {
+            ).length;
+            if (priorCount === 0 && rawDecisions[targetPeerId].effort === 'silent') {
               rawDecisions[targetPeerId] = {
                 effort: 'standard',
                 thesis: getDomainSafeThesisFallback(targetPeerId, runtimeConfig),
+              };
+              raw.isResolved = false;
+            } else if (
+              priorCount === 1 &&
+              waveIndex === 2 &&
+              prevWaveHasQuestionOrVeto &&
+              rawDecisions[targetPeerId].effort === 'silent'
+            ) {
+              const callerName = msg.agent_id
+                ? getAgentProfile(msg.agent_id, runtimeConfig).name
+                : 'your teammate';
+              rawDecisions[targetPeerId] = {
+                effort: 'standard',
+                thesis: `Address @${callerName} and immediately provide the concrete alternative option from your vault or domain knowledge (do NOT ask if they want suggestions—name the specific alternative right now).`,
               };
               raw.isResolved = false;
             }
