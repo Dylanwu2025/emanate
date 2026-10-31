@@ -190,6 +190,8 @@ export function getAgentDomainIndexKeywords(
     'the', 'and', 'for', 'with', 'from', 'into', 'options', 'option', 'private',
     'group', 'notes', 'insider', 'hold', 'holds', 'rules', 'rule', 'total',
     'departure', 'arrival', 'price', 'nightly', 'rate', 'hours', 'strict',
+    'kyoto', 'osaka', 'japan', 'kansai', 'station', 'airport', 'city', 'days',
+    'trip', 'plan', 'plans', 'project', 'nova', 'launch', 'team',
   ]);
 
   const tokens = topics

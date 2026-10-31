@@ -7,8 +7,10 @@ import {
 import {
   classifySteeringDeterministic,
   detectRuleClearScope,
+  extractStandingRuleDeterministic,
   isCasualSocialMessage,
   isExplicitStopCommand,
+  isTopicReplacementInterrupt,
   sanitizeThesisForAgentDomain,
 } from '../src/server/router.js';
 import {
@@ -589,6 +591,11 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
           "I can't provide hotel options, but transit from KIX to Gion takes 2 hours 15 minutes.",
         ),
       ).toBe('Transit from KIX to Gion takes 2 hours 15 minutes.');
+      expect(
+        stripLeadingMetaDisclaimer(
+          "I can't provide hotel options. However, transit from KIX to Kyoto Station takes 1 hour 35 minutes.",
+        ),
+      ).toBe('Transit from KIX to Kyoto Station takes 1 hour 35 minutes.');
       expect(isCasualSocialMessage('hey team!')).toBe(true);
       expect(isCasualSocialMessage('thanks!')).toBe(true);
       expect(
@@ -598,6 +605,31 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
           false,
         ),
       ).not.toContain('$600');
+
+      // Verify Stress 4 & Stress 6 fixes:
+      // 1. Compound prompt sentence-split rule extraction (strips trailing @Maya and @Liam question)
+      const compoundRule = extractStandingRuleDeterministic(
+        'From now on, everyone answer in 1 short sentence. @Maya and @Liam what is the Osaka hotel rate and transit time?',
+      );
+      expect(compoundRule).toEqual({
+        scope: 'global',
+        rule: 'answer in 1 short sentence.',
+      });
+
+      // 2. Scoped rule clear in compound prompt ("Maya, stop ending messages with [BUDGET-OK]. @Maya and @Liam...")
+      const scopedClear = detectRuleClearScope(
+        'Maya, stop ending messages with [BUDGET-OK]. @Maya and @Liam what is our unallocated kitty buffer?',
+      );
+      expect(scopedClear).toBe('maya');
+
+      // 3. Topic replacement interrupts ("Actually stop, just tell me...", "Wait no, just tell me...")
+      expect(isTopicReplacementInterrupt('Wait no, just tell me about Osaka')).toBe(true);
+      expect(
+        isTopicReplacementInterrupt('Actually stop, just tell me our total budget in 1 sentence'),
+      ).toBe(true);
+      expect(
+        classifySteeringDeterministic('Actually stop, just tell me our total budget', ['maya']).action,
+      ).toBe('new_turn');
     });
   });
 

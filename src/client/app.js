@@ -307,7 +307,8 @@ function upsertMessageInDOM(msg, forceScroll = false) {
   scrollToBottomIfPinned(forceScroll);
 }
 
-async function fetchInitialState() {
+async function fetchInitialState(forceScroll = false) {
+  const shouldForceScroll = forceScroll || messagesById.size === 0;
   const res = await fetch('/api/state');
   if (!res.ok) return;
   const data = await res.json();
@@ -315,7 +316,7 @@ async function fetchInitialState() {
   for (const msg of data.messages || []) {
     messagesById.set(msg.id, msg);
   }
-  renderAllMessages(true);
+  renderAllMessages(shouldForceScroll);
 }
 
 let activeEventSource = null;
@@ -335,7 +336,7 @@ function connectSSE() {
   activeEventSource = es;
 
   es.onopen = () => {
-    fetchInitialState().catch(() => {});
+    fetchInitialState(false).catch(() => {});
   };
 
   es.onmessage = (ev) => {
@@ -435,7 +436,41 @@ formEl.addEventListener('submit', (e) => {
   sendUserMessage(inputEl.value);
 });
 
+let activeMentionMatches = [];
+let activeMentionIndex = 0;
+
 inputEl.addEventListener('keydown', (e) => {
+  const isMenuOpen = !mentionMenuEl.classList.contains('hidden') && activeMentionMatches.length > 0;
+
+  if (isMenuOpen) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      activeMentionIndex = (activeMentionIndex + 1) % activeMentionMatches.length;
+      renderMentionMenuItems();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      activeMentionIndex =
+        (activeMentionIndex - 1 + activeMentionMatches.length) % activeMentionMatches.length;
+      renderMentionMenuItems();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      const chosen = activeMentionMatches[activeMentionIndex] || activeMentionMatches[0];
+      if (chosen) {
+        insertMentionIntoComposer(`${chosen.tag} `);
+      }
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      hideMentionMenu();
+      return;
+    }
+  }
+
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     sendUserMessage(inputEl.value);
@@ -473,6 +508,26 @@ function insertMentionIntoComposer(mentionText) {
   inputEl.setSelectionRange(cursorPos, cursorPos);
 }
 
+function renderMentionMenuItems() {
+  mentionMenuEl.innerHTML = '';
+  activeMentionMatches.forEach((candidate, idx) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `mention-item${idx === activeMentionIndex ? ' active' : ''}`;
+    item.innerHTML = `
+      <span class="avatar avatar-${candidate.id}">${candidate.name[0]}</span>
+      <span class="participant-info">
+        <span class="participant-name">${candidate.tag}</span>
+        <span class="participant-role">${candidate.role}</span>
+      </span>
+    `;
+    item.addEventListener('click', () => {
+      insertMentionIntoComposer(`${candidate.tag} `);
+    });
+    mentionMenuEl.appendChild(item);
+  });
+}
+
 function checkMentionAutocomplete() {
   const cursorPos = inputEl.selectionStart ?? inputEl.value.length;
   const textBeforeCursor = inputEl.value.slice(0, cursorPos);
@@ -493,28 +548,15 @@ function checkMentionAutocomplete() {
     return;
   }
 
-  mentionMenuEl.innerHTML = '';
-  for (const candidate of matches) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'mention-item';
-    item.innerHTML = `
-      <span class="avatar avatar-${candidate.id}">${candidate.name[0]}</span>
-      <span class="participant-info">
-        <span class="participant-name">${candidate.tag}</span>
-        <span class="participant-role">${candidate.role}</span>
-      </span>
-    `;
-    item.addEventListener('click', () => {
-      insertMentionIntoComposer(`${candidate.tag} `);
-    });
-    mentionMenuEl.appendChild(item);
-  }
-
+  activeMentionMatches = matches;
+  activeMentionIndex = 0;
+  renderMentionMenuItems();
   mentionMenuEl.classList.remove('hidden');
 }
 
 function hideMentionMenu() {
+  activeMentionMatches = [];
+  activeMentionIndex = 0;
   mentionMenuEl.classList.add('hidden');
 }
 

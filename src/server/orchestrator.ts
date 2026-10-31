@@ -103,7 +103,7 @@ export function buildConversationHistoryForAgent(
 }
 
 const LEADING_META_DISCLAIMER_RE =
-  /^(?:(?:Regarding\s+[^,.\n]+,\s*)?I\s+(?:can(?:'t|’t|not)|don(?:'t|’t)|do\s+not|only)\s+(?:provide|summarize|share|help\s+with|cover|have)\s+[^,.!\n]+(?:,\s*but\s+|\s*[.!]\s*)|I(?:'m|’m|\s+am)\s+focused\s+on\s+[^,.\n]+,\s*so\s+(?:I(?:'ll|’ll|\s+will)\s+(?:share|note|mention)\s+that\s+)?)/i;
+  /^(?:(?:Regarding\s+[^,.\n]+,\s*)?I\s+(?:can(?:'t|’t|not)|don(?:'t|’t)|do\s+not|only)\s+(?:provide|summarize|share|help\s+with|cover|have)\s+[^,.!\n]+(?:,\s*but\s+|\s*[.!]\s*(?:(?:However|Instead|Meanwhile)\s*[,:]?\s*)?)|I(?:'m|’m|\s+am)\s+focused\s+on\s+[^,.\n]+,\s*so\s+(?:I(?:'ll|’ll|\s+will)\s+(?:share|note|mention)\s+that\s+)?)/i;
 
 export function stripLeadingMetaDisclaimer(text: string): string {
   const match = text.match(LEADING_META_DISCLAIMER_RE);
@@ -284,6 +284,7 @@ export interface ActiveAgentStreamState {
   thesis: string;
   peerTheses: string[];
   priorSpeakerTheses: Array<{ agentId: AgentId; thesis: string }>;
+  steeringDirectives: string[];
   pendingContinuation: PendingContinuation | null;
   classificationGate: DeferredGate | null;
   stopped: boolean;
@@ -314,6 +315,7 @@ function createActiveStreamState(init: {
     thesis: init.thesis,
     peerTheses: init.peerTheses,
     priorSpeakerTheses: init.priorSpeakerTheses,
+    steeringDirectives: [],
     pendingContinuation: null,
     classificationGate: null,
     stopped: false,
@@ -465,32 +467,9 @@ export class GroupChatOrchestrator extends EventEmitter {
       throw new Error('User message content cannot be empty.');
     }
 
-    // If streams are currently active, route through the In-Flight Steering Classifier
-    if (this.isStreaming()) {
-      return this.handleMidStreamUserMessage(trimmed);
-    }
-
-    // Bug 7 fix: If a turn is currently in its pre-stream routing phase (awaiting routeWave before
-    // activeStreams is populated), wait for routeWave to reserve its streams and then steer them
-    // if this message is a steering instruction, or abort if it's a stop/topic-change!
-    if (this.activeTurnPromise && this.turnAbortController && !this.turnAbortController.signal.aborted) {
-      if (isExplicitStopCommand(trimmed)) {
-        await this.stopAll();
-      } else {
-        // Wait briefly (up to 1.5s) for Wave 0 streams to be reserved so we can steer them in-place!
-        const waitStart = Date.now();
-        while (!this.isStreaming() && this.turnAbortController && Date.now() - waitStart < 1500) {
-          await new Promise((r) => setTimeout(r, 25));
-        }
-        if (this.isStreaming()) {
-          return this.handleMidStreamUserMessage(trimmed);
-        }
-        await this.stopAll();
-      }
-    } else if (this.activeTurnPromise) {
-      await this.activeTurnPromise.catch(() => {});
-    }
-
+    // Reserve user message slot and emit message.created SYNCHRONOUSLY upon arrival
+    // so rapid-fire user messages (0ms / 250ms / 600ms) always get strictly monotonic seqs
+    // matching their exact arrival order!
     const userRow = this.store.reserveMessage({
       role: 'user',
       content: trimmed,
@@ -498,6 +477,20 @@ export class GroupChatOrchestrator extends EventEmitter {
     });
     const userMessage = toPublicWireMessage(userRow);
     this.emitSSE({ type: 'message.created', message: userMessage });
+
+    // If streams are currently active, route through the In-Flight Steering Classifier
+    if (this.isStreaming()) {
+      return this.handleMidStreamUserMessage(trimmed, userMessage);
+    }
+
+    // If a turn is currently in its pre-stream routing phase (awaiting routeWave(0) before
+    // any agent stream has emitted tokens), immediately abort the pre-stream routing
+    // and start a fresh turn for this newer message!
+    if (this.activeTurnPromise && this.turnAbortController && !this.turnAbortController.signal.aborted) {
+      await this.stopAll();
+    } else if (this.activeTurnPromise) {
+      await this.activeTurnPromise.catch(() => {});
+    }
 
     const turnPromise = this.runTurnLoop(userMessage, trimmed);
     this.activeTurnPromise = turnPromise;
@@ -510,15 +503,10 @@ export class GroupChatOrchestrator extends EventEmitter {
     }
   }
 
-  private async handleMidStreamUserMessage(trimmed: string): Promise<RunTurnResult> {
-    const userRow = this.store.reserveMessage({
-      role: 'user',
-      content: trimmed,
-      status: 'completed',
-    });
-    const userMessage = toPublicWireMessage(userRow);
-    this.emitSSE({ type: 'message.created', message: userMessage });
-
+  private async handleMidStreamUserMessage(
+    trimmed: string,
+    userMessage: PublicWireMessage,
+  ): Promise<RunTurnResult> {
     if (isExplicitStopCommand(trimmed)) {
       const activeAgentIds = Array.from(this.activeStreams.keys());
       await this.stopAll();
@@ -670,8 +658,10 @@ export class GroupChatOrchestrator extends EventEmitter {
         for (const targetAgentId of classification.targetAgents) {
           const preAborted = preAbortedStreams.get(targetAgentId);
           if (preAborted) {
+            preAborted.stream.steeringDirectives.push(directive);
+            const combinedDirective = preAborted.stream.steeringDirectives.join(' AND ');
             preAborted.stream.pendingContinuation = {
-              directive,
+              directive: combinedDirective,
               flushedSnapshot: preAborted.snapshot,
             };
             preAborted.stream.classificationGate?.resolve('continue');
@@ -682,8 +672,10 @@ export class GroupChatOrchestrator extends EventEmitter {
           const paused = pausedOnlyStreams.get(targetAgentId);
           if (paused && !paused.stream.stopped) {
             paused.stream.epoch += 1;
+            paused.stream.steeringDirectives.push(directive);
+            const combinedDirective = paused.stream.steeringDirectives.join(' AND ');
             paused.stream.pendingContinuation = {
-              directive,
+              directive: combinedDirective,
               flushedSnapshot: paused.snapshot,
             };
             paused.stream.abortController.abort();
@@ -695,8 +687,10 @@ export class GroupChatOrchestrator extends EventEmitter {
           const existingStream = this.activeStreams.get(targetAgentId);
           if (existingStream && !existingStream.stopped) {
             existingStream.epoch += 1;
+            existingStream.steeringDirectives.push(directive);
+            const combinedDirective = existingStream.steeringDirectives.join(' AND ');
             existingStream.pendingContinuation = {
-              directive,
+              directive: combinedDirective,
               flushedSnapshot: existingStream.flushedContent,
             };
             existingStream.abortController.abort();
@@ -1040,6 +1034,7 @@ Rewrite your message from the beginning by keeping the exact wording and unaffec
         let needsFirstChunkReplace = Boolean(
           currentContinuation && currentContinuation.flushedSnapshot.length > 0,
         );
+        let replaceBuffer = '';
         let disclaimerCheckDone = false;
         let disclaimerBuffer = '';
 
@@ -1086,11 +1081,21 @@ Rewrite your message from the beginning by keeping the exact wording and unaffec
 
             if (!disclaimerCheckDone) {
               disclaimerBuffer += rawDelta;
-              if (
-                /^I(?:'m|’m|\s+am|\s+can|\s+don|\s+do|\s+only)\b/i.test(disclaimerBuffer.trimStart()) &&
-                !/[.!]\s/.test(disclaimerBuffer) &&
-                disclaimerBuffer.length < 110
-              ) {
+              const trimmedBuf = disclaimerBuffer.trimStart();
+              // If the buffer is still a short prefix that could grow into a leading disclaimer
+              // (e.g. first token is just "I" or "Regarding"), keep buffering up to ~20 chars
+              const couldGrowIntoDisclaimer =
+                trimmedBuf.length < 20 &&
+                /^(?:i|re|as)\b/i.test(trimmedBuf) &&
+                !/[.!]\s/.test(trimmedBuf);
+              const matchesDisclaimerStart =
+                /^(?:Regarding\s+|I(?:'m|’m|\s+am|\s+can|\s+don|\s+do|\s+only)\b)/i.test(
+                  trimmedBuf,
+                ) &&
+                !/[.!]\s+(?:[A-Z0-9*-]|$)/.test(trimmedBuf) &&
+                disclaimerBuffer.length < 120;
+
+              if (couldGrowIntoDisclaimer || matchesDisclaimerStart) {
                 continue;
               }
               deltaToEmit = stripLeadingMetaDisclaimer(disclaimerBuffer);
@@ -1100,8 +1105,14 @@ Rewrite your message from the beginning by keeping the exact wording and unaffec
             }
 
             if (needsFirstChunkReplace) {
+              replaceBuffer += deltaToEmit;
+              if (replaceBuffer.length < 24 && !/[.!?\n]/.test(replaceBuffer)) {
+                continue;
+              }
               needsFirstChunkReplace = false;
-              this.emitDeltaForEpoch(agentId, activeEpoch, deltaToEmit, true);
+              const toReplace = replaceBuffer;
+              replaceBuffer = '';
+              this.emitDeltaForEpoch(agentId, activeEpoch, toReplace, true);
             } else {
               this.emitDeltaForEpoch(agentId, activeEpoch, deltaToEmit, false);
             }
@@ -1119,12 +1130,24 @@ Rewrite your message from the beginning by keeping the exact wording and unaffec
             disclaimerCheckDone = true;
             if (cleaned) {
               if (needsFirstChunkReplace) {
-                needsFirstChunkReplace = false;
-                this.emitDeltaForEpoch(agentId, activeEpoch, cleaned, true);
+                replaceBuffer += cleaned;
               } else {
                 this.emitDeltaForEpoch(agentId, activeEpoch, cleaned, false);
               }
             }
+          }
+
+          if (
+            needsFirstChunkReplace &&
+            replaceBuffer.length > 0 &&
+            !activeSignal.aborted &&
+            !streamState.stopped &&
+            streamState.epoch === activeEpoch
+          ) {
+            needsFirstChunkReplace = false;
+            const toReplace = replaceBuffer;
+            replaceBuffer = '';
+            this.emitDeltaForEpoch(agentId, activeEpoch, toReplace, true);
           }
         } catch (err) {
           if (!activeSignal.aborted && !streamState.stopped && !turnSignal.aborted) {
@@ -1154,14 +1177,14 @@ Rewrite your message from the beginning by keeping the exact wording and unaffec
       if (this.activeStreams.get(agentId) === streamState) {
         this.activeStreams.delete(agentId);
       }
+      const completedRow = this.store.markMessageStatus(row.id, 'completed');
+      const wireMsg = toPublicWireMessage(completedRow);
+      this.emitSSE({
+        type: 'message.done',
+        message: wireMsg,
+      });
     }
 
-    const completedRow = this.store.markMessageStatus(row.id, 'completed');
-    const wireMsg = toPublicWireMessage(completedRow);
-    this.emitSSE({
-      type: 'message.done',
-      message: wireMsg,
-    });
-    return wireMsg;
+    return toPublicWireMessage(this.store.getMessageById(row.id)!);
   }
 }

@@ -332,56 +332,91 @@ export function isExplicitStopCommand(text: string): boolean {
   );
 }
 
-export function detectRuleClearScope(text: string, mentionedAgents: AgentId[]): RuleScope | null {
-  const lower = text.trim().toLowerCase();
-  if (isExplicitStopCommand(lower)) return null;
+const CLEAR_CLAUSE_RE =
+  /\b(?:forget|clear|remove|drop|cancel|reset|stop\s+following)\b.*\b(?:standing\s+rules?|rules?|instructions?|format|prefix|suffix|tag|haikus?|jpy|yen|euros?|bullet\s+points?|uppercase)\b|\b(?:stop\s+(?:using|answering|writing|starting|ending|beginning|finishing|including|adding|appending|putting)|no\s+longer\s+need\s+to|no\s+more\s+(?:haikus?|bullets?|bullet\s+points?|prefixes|suffixes|tags|jpy|yen|euros?|uppercase)|don'?t\s+(?:use|start|end|include|add)|answer\s+in\s+\d*\s*normal\s+sentences?|without\s+any\s+(?:prefix|suffix|tag)|go\s+back\s+to\s+usd|switch\s+back\s+to\s+usd)/i;
 
-  const isClearIntent =
-    /\b(?:forget|clear|remove|drop|cancel|reset|stop\s+following)\b.*\b(?:standing\s+rules?|rules?|instructions?|format|prefix|haikus?|jpy|yen|euros?|bullet\s+points?|uppercase)\b/i.test(
-      lower,
-    ) ||
-    /\b(?:stop\s+(?:using|answering\s+in|writing\s+in|starting\s+(?:every\s+|all\s+)?(?:replies|responses|messages)\s+with|including)|no\s+longer\s+need\s+to|no\s+more\s+(?:haikus?|bullets?|bullet\s+points?|prefixes|tags|jpy|yen|euros?|uppercase)|don'?t\s+use\s+(?:haikus?|bullets?|prefixes)|answer\s+in\s+\d*\s*normal\s+sentences?|without\s+any\s+prefix|go\s+back\s+to\s+usd|switch\s+back\s+to\s+usd)\b/i.test(
-      lower,
-    );
+export function detectRuleClearScope(
+  text: string,
+  mentionedAgents?: AgentId[],
+  runtimeConfig?: CustomAgentRuntimeConfig,
+): RuleScope | null {
+  const trimmed = text.trim();
+  if (!trimmed || isExplicitStopCommand(trimmed)) return null;
 
-  if (!isClearIntent) return null;
-  if (mentionedAgents.length === 1) {
-    return mentionedAgents[0];
+  const sentences = trimmed
+    .split(/(?<=[.!?])\s+|\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  for (const sentence of sentences) {
+    if (CLEAR_CLAUSE_RE.test(sentence)) {
+      const clauseMentions = extractMentionedAgents(sentence, runtimeConfig);
+      if (clauseMentions.length === 1) {
+        return clauseMentions[0];
+      }
+      if (clauseMentions.length === 0 && mentionedAgents && mentionedAgents.length === 1 && sentences.length === 1) {
+        return mentionedAgents[0];
+      }
+      return 'global';
+    }
   }
-  return 'global';
+
+  return null;
 }
+
+const PERSISTENT_RULE_CLAUSE_RE =
+  /\b(?:always|never|from\s+now\s+on|going\s+forward|in\s+all\s+(?:future\s+)?(?:responses|answers|messages|turns)|every\s+(?:time|reply|response|message)|(?:start|end|begin)\s+(?:every|all|each)\s+(?:reply|response|message)s?\s+with|for\s+the\s+rest\s+of)\b|\b(?:convert\s+all\s+prices|state\s+all\s+prices|quote\s+(?:all\s+)?prices|use\s+japanese\s+yen|in\s+jpy\s+instead|to\s+japanese\s+yen|use\s+euros?|switch\s+to\s+euros?|in\s+bullet\s+points|use\s+bullet\s+points|answer\s+in\s+(?:bullet|haikus?|\d+\s+normal\s+sentences?)|keep\s+(?:all\s+|your\s+)?(?:answers|responses)\s+(?:to|under)|in\s+uppercase|all\s+caps)\b/i;
 
 export function extractStandingRuleDeterministic(
   text: string,
-  mentionedAgents: AgentId[] = extractMentionedAgents(text),
+  mentionedAgents?: AgentId[],
+  runtimeConfig?: CustomAgentRuntimeConfig,
 ): ExtractedStandingRule | null {
   const trimmed = text.trim();
   if (!trimmed || isExplicitStopCommand(trimmed)) return null;
 
-  const firstSentenceMatch = trimmed.match(/^([^.?]+\.)\s+(?:what|when|where|which|how|can|should|could|who|why)\b/i);
-  const candidateText = firstSentenceMatch ? firstSentenceMatch[1].trim() : trimmed;
+  const sentences = trimmed
+    .split(/(?<=[.!?])\s+|\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  const hasPersistentCue =
-    /\b(?:always|never|from\s+now\s+on|going\s+forward|in\s+all\s+(?:future\s+)?(?:responses|answers|messages|turns)|every\s+(?:time|reply|response)|start\s+every\s+(?:reply|response)\s+with|for\s+the\s+rest\s+of)\b/i.test(
-      candidateText,
-    ) ||
-    /\b(?:convert\s+all\s+prices|state\s+all\s+prices|quote\s+(?:all\s+)?prices|use\s+japanese\s+yen|in\s+jpy\s+instead|to\s+japanese\s+yen|use\s+euros?|switch\s+to\s+euros?|in\s+bullet\s+points|use\s+bullet\s+points|answer\s+in\s+(?:bullet|haikus?|\d+\s+normal\s+sentences?)|keep\s+(?:all\s+|your\s+)?(?:answers|responses)\s+(?:to|under)|in\s+uppercase|all\s+caps)\b/i.test(
-      candidateText,
-    );
+  for (const sentence of sentences) {
+    if (CLEAR_CLAUSE_RE.test(sentence)) {
+      continue;
+    }
+    if (!PERSISTENT_RULE_CLAUSE_RE.test(sentence)) {
+      continue;
+    }
 
-  if (!hasPersistentCue) {
-    return null;
+    const clauseMentions = extractMentionedAgents(sentence, runtimeConfig);
+    const scope: RuleScope =
+      clauseMentions.length === 1
+        ? clauseMentions[0]
+        : clauseMentions.length === 0 && mentionedAgents && mentionedAgents.length === 1 && sentences.length === 1
+          ? mentionedAgents[0]
+          : 'global';
+
+    const cleanedRule = sentence
+      .replace(/^(?:@?(?:maya|liam|zoe)\s*[,:—-]\s*)+/i, '')
+      .replace(/^(?:from\s+now\s+on\s*[,:—-]?\s*)?(?:everyone\s*[,:—-]?\s*)?/i, (m) =>
+        /everyone/i.test(m) ? '' : m,
+      )
+      .trim();
+
+    return {
+      scope,
+      rule: cleanedRule || sentence,
+    };
   }
 
-  const scope: RuleScope = mentionedAgents.length === 1 ? mentionedAgents[0] : 'global';
-  const cleanedRule = candidateText
-    .replace(/^(?:@?(?:maya|liam|zoe)\s*[,:—-]\s*)+/i, '')
-    .trim();
+  return null;
+}
 
-  return {
-    scope,
-    rule: cleanedRule || candidateText,
-  };
+export function isTopicReplacementInterrupt(text: string): boolean {
+  const trimmed = text.trim();
+  return /^(?:actually\s+stop|wait\s+no|no\s+wait|scratch\s+that|forget\s+that|never\s*mind|cancel\s+that)\b[\s,:-]*(?:just\s+|instead\s+)?(?:tell\s+(?:me|us)|what|how|where|when|who|why|can|should|give)/i.test(
+    trimmed,
+  );
 }
 
 export function classifySteeringDeterministic(
@@ -402,6 +437,16 @@ export function classifySteeringDeterministic(
   const mentioned = extractMentionedAgents(trimmed);
   const clearRuleScope = detectRuleClearScope(trimmed, mentioned);
   const standingRule = extractStandingRuleDeterministic(trimmed, mentioned);
+
+  if (isTopicReplacementInterrupt(trimmed)) {
+    return {
+      action: 'new_turn',
+      targetAgents: [...activeAgents],
+      directive: trimmed,
+      standingRule,
+      clearRuleScope,
+    };
+  }
 
   const targetAgents: AgentId[] =
     mentioned.length > 0
@@ -717,9 +762,12 @@ Return strict JSON:
         );
 
       const standingRule = isEchoOfExistingActiveRule ? null : candidateRule;
+      const finalAction: SteeringAction = isTopicReplacementInterrupt(trimmed)
+        ? 'new_turn'
+        : raw.action;
 
       return {
-        action: raw.action,
+        action: finalAction,
         targetAgents,
         directive,
         standingRule,
@@ -1191,7 +1239,7 @@ Return strict JSON:
     const mentionedInUserMsg = extractMentionedAgents(referenceText, runtimeConfig);
     const detClearScope = isFollowUpWave
       ? null
-      : detectRuleClearScope(referenceText, mentionedInUserMsg);
+      : detectRuleClearScope(referenceText, mentionedInUserMsg, runtimeConfig);
     const clearRuleScope = isFollowUpWave
       ? null
       : detClearScope ??
@@ -1199,10 +1247,16 @@ Return strict JSON:
           ? raw.clearRuleScope
           : null);
 
+    const detRule = isFollowUpWave
+      ? null
+      : extractStandingRuleDeterministic(referenceText, mentionedInUserMsg, runtimeConfig);
+
+    // Prefer deterministic sentence-split rule extraction when it matches so compound prompts
+    // ("From now on, everyone answer in 1 short sentence. @Maya and @Liam what is...")
+    // never store the trailing question inside the rule text!
     let candidateStandingRule = isFollowUpWave
       ? null
-      : normalizeStandingRule(raw?.standingRule) ??
-        extractStandingRuleDeterministic(referenceText, mentionedInUserMsg);
+      : detRule ?? normalizeStandingRule(raw?.standingRule);
 
     if (candidateStandingRule && !isMock) {
       const matchesExistingActive = activeRules.some(

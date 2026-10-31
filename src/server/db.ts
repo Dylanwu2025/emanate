@@ -59,7 +59,8 @@ const TOPIC_BUCKETS: Array<{ name: string; pattern: RegExp }> = [
   },
   {
     name: 'prefix_suffix',
-    pattern: /\b(start\s+(?:every|all|each)?\s*(?:replies|responses|messages)|prefix|suffix|tag|header|begin\s+with)\b/i,
+    pattern:
+      /\b((?:start|end|begin|finish)(?:ing)?\s+(?:every|all|each)?\s*(?:replies|responses|messages)?\s*with|prefix|suffix|tag|header)\b|\[[^\]]+\]/i,
   },
   { name: 'length', pattern: /\b(short|brief|concise|detailed|long|sentences?|words?|one-liner)\b/i },
   { name: 'language', pattern: /\b(english|japanese|spanish|french|bilingual|translate|language)\b/i },
@@ -78,12 +79,22 @@ function extractTopics(text: string): Set<string> {
 }
 
 function extractSignificantTokens(text: string): Set<string> {
-  const words = text
-    .toLowerCase()
+  const lower = text.toLowerCase();
+  const tokens = new Set<string>();
+  const bracketMatches = lower.match(/\[[^\]]+\]/g);
+  if (bracketMatches) {
+    for (const tag of bracketMatches) {
+      tokens.add(tag);
+    }
+  }
+  const words = lower
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length > 2 && !STOPWORDS.has(w));
-  return new Set(words);
+    .filter((w) => w.length >= 2 && !STOPWORDS.has(w));
+  for (const w of words) {
+    tokens.add(w);
+  }
+  return tokens;
 }
 
 export function rulesConflict(existingRuleText: string, newRuleText: string): boolean {
