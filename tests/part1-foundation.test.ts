@@ -9,6 +9,8 @@ import {
 import {
   createLLMProvider,
   HttpLLMProvider,
+  normalizeAlternatingMessages,
+  parseJSONResponse,
   resolveLLMConfigFromEnv,
   ScriptableMockLLMProvider,
 } from '../src/server/llm.js';
@@ -150,6 +152,19 @@ describe('Part 1 Foundation: SQLite Store, Isolated Contexts & Swappable LLM Ada
       const allRulesHistory = store.listAllStandingRules();
       expect(allRulesHistory).toHaveLength(3);
       expect(allRulesHistory.filter((r) => r.active === 1)).toHaveLength(1);
+
+      // Clearing 'global' scope preserves agent-scoped rules
+      store.addStandingRule({
+        id: 'rule-global-bullet',
+        scope: 'global',
+        rule: 'Use bullet points.',
+      });
+      expect(store.clearStandingRules('global')).toBe(1);
+      expect(store.listActiveStandingRules('maya').map((r) => r.id)).toEqual(['rule-maya-eur']);
+
+      // Clearing 'all' (or undefined) deactivates remaining active rules across all scopes
+      expect(store.clearStandingRules('all')).toBe(1);
+      expect(store.listActiveStandingRules()).toHaveLength(0);
     });
   });
 
@@ -397,6 +412,28 @@ describe('Part 1 Foundation: SQLite Store, Isolated Contexts & Swappable LLM Ada
         messages: [{ role: 'user', content: 'Check resolution' }],
       });
       expect(parsed).toEqual({ isResolved: true });
+
+      expect(
+        parseJSONResponse<{ isResolved: boolean }>(
+          'Here is the routing result:\n```json\n{"isResolved": true}\n```\nHope that helps!',
+        ),
+      ).toEqual({ isResolved: true });
+
+      expect(
+        normalizeAlternatingMessages(
+          [
+            { role: 'system', content: 'System prompt' },
+            { role: 'user', content: 'User question' },
+            { role: 'user', content: '[Maya]: Maya response' },
+            { role: 'assistant', content: 'Liam part 1' },
+            { role: 'assistant', content: 'Liam part 2' },
+          ],
+          'Continue.',
+        ),
+      ).toEqual([
+        { role: 'user', content: 'User question\n\n[Maya]: Maya response' },
+        { role: 'assistant', content: 'Liam part 1\n\nLiam part 2' },
+      ]);
     });
   });
 });

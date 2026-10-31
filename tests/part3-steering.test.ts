@@ -6,11 +6,15 @@ import {
 } from '../src/server/llm.js';
 import {
   classifySteeringDeterministic,
+  detectRuleClearScope,
+  isCasualSocialMessage,
   isExplicitStopCommand,
+  sanitizeThesisForAgentDomain,
 } from '../src/server/router.js';
 import {
   GroupChatOrchestrator,
   normalizeContinuationSeam,
+  stripLeadingMetaDisclaimer,
   type OrchestratorSSEEvent,
 } from '../src/server/orchestrator.js';
 import { createAppServer } from '../src/server/index.js';
@@ -565,6 +569,33 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
         ['maya', 'liam'],
       );
       expect(roleClassified.targetAgents).toEqual(['maya']);
+
+      // Verify Bug 1 fix: clearing haiku or prefix rules ("Stop using haikus...", "Stop starting replies with [KYOTO]...")
+      expect(
+        detectRuleClearScope('Stop using haikus, answer in 1 normal sentence.', []),
+      ).toBe('global');
+      expect(
+        detectRuleClearScope('Stop starting replies with [KYOTO], answer normally.', []),
+      ).toBe('global');
+
+      // Verify Bug 2 & 6 seam and disclaimer helpers
+      expect(
+        normalizeContinuationSeam('   - **Notes**\n   -', '—in Euros, that is €600.'),
+      ).toBe(' in Euros, that is €600.');
+      expect(
+        stripLeadingMetaDisclaimer(
+          "I can't provide hotel options, but transit from KIX to Gion takes 2 hours 15 minutes.",
+        ),
+      ).toBe('Transit from KIX to Gion takes 2 hours 15 minutes.');
+      expect(isCasualSocialMessage('hey team!')).toBe(true);
+      expect(isCasualSocialMessage('thanks!')).toBe(true);
+      expect(
+        sanitizeThesisForAgentDomain(
+          'maya',
+          'Flight A is $600 departing at 10:00 AM',
+          false,
+        ),
+      ).not.toContain('$600');
     });
   });
 

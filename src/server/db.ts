@@ -5,6 +5,7 @@ export type MessageRole = 'user' | 'agent';
 export type MessageStatus = 'streaming' | 'completed';
 export type AgentId = 'maya' | 'liam' | 'zoe';
 export type RuleScope = 'global' | AgentId;
+export type ClearRuleScope = RuleScope | 'all';
 
 export interface MessageRow {
   seq: number;
@@ -50,8 +51,16 @@ const STOPWORDS = new Set([
 ]);
 
 const TOPIC_BUCKETS: Array<{ name: string; pattern: RegExp }> = [
-  { name: 'currency', pattern: /\b(usd|jpy|eur|yen|dollars?|currency|currencies|prices?|costs?)\b/i },
-  { name: 'format', pattern: /\b(bullets?|bulleted|numbered|paragraphs?|prose|tables?|json|markdown|lists?)\b/i },
+  { name: 'currency', pattern: /\b(usd|jpy|eur|yen|euros?|dollars?|currency|currencies|prices?|costs?)\b/i },
+  {
+    name: 'format',
+    pattern:
+      /\b(bullets?|bulleted|numbered|paragraphs?|prose|tables?|json|markdown|lists?|haikus?|poems?|rhymes?|normal\s+sentences?|plain\s+text|uppercase|lowercase|all\s+caps)\b/i,
+  },
+  {
+    name: 'prefix_suffix',
+    pattern: /\b(start\s+(?:every|all|each)?\s*(?:replies|responses|messages)|prefix|suffix|tag|header|begin\s+with)\b/i,
+  },
   { name: 'length', pattern: /\b(short|brief|concise|detailed|long|sentences?|words?|one-liner)\b/i },
   { name: 'language', pattern: /\b(english|japanese|spanish|french|bilingual|translate|language)\b/i },
   { name: 'tone', pattern: /\b(formal|casual|friendly|playful|serious|emoji|emojis|enthusiastic)\b/i },
@@ -113,11 +122,94 @@ export function rulesConflict(existingRuleText: string, newRuleText: string): bo
 export class EmanateStore {
   public readonly db: Database.Database;
 
+  private readonly stmtInsertMessage: Database.Statement;
+  private readonly stmtAppendMessageDelta: Database.Statement;
+  private readonly stmtUpdateMessageContent: Database.Statement;
+  private readonly stmtMarkMessageStatus: Database.Statement;
+  private readonly stmtGetMessageById: Database.Statement;
+  private readonly stmtListMessages: Database.Statement;
+  private readonly stmtDeactivateRuleById: Database.Statement;
+  private readonly stmtSelectActiveRulesByScope: Database.Statement;
+  private readonly stmtInsertStandingRule: Database.Statement;
+  private readonly stmtClearAllStandingRules: Database.Statement;
+  private readonly stmtClearStandingRulesByScope: Database.Statement;
+  private readonly stmtListActiveRulesForAgent: Database.Statement;
+  private readonly stmtListAllActiveRules: Database.Statement;
+  private readonly stmtListAllRules: Database.Statement;
+
   constructor(dbPath = ':memory:') {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.initSchema();
+
+    this.stmtInsertMessage = this.db.prepare(`
+      INSERT INTO messages (id, role, agent_id, content, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    this.stmtAppendMessageDelta = this.db.prepare(`
+      UPDATE messages
+      SET content = content || ?
+      WHERE id = ?
+      RETURNING seq, id, role, agent_id, content, status, created_at
+    `);
+    this.stmtUpdateMessageContent = this.db.prepare(`
+      UPDATE messages
+      SET content = ?
+      WHERE id = ?
+      RETURNING seq, id, role, agent_id, content, status, created_at
+    `);
+    this.stmtMarkMessageStatus = this.db.prepare(`
+      UPDATE messages
+      SET status = ?
+      WHERE id = ?
+      RETURNING seq, id, role, agent_id, content, status, created_at
+    `);
+    this.stmtGetMessageById = this.db.prepare(`
+      SELECT seq, id, role, agent_id, content, status, created_at
+      FROM messages
+      WHERE id = ?
+    `);
+    this.stmtListMessages = this.db.prepare(`
+      SELECT seq, id, role, agent_id, content, status, created_at
+      FROM messages
+      ORDER BY seq ASC
+    `);
+    this.stmtDeactivateRuleById = this.db.prepare(`
+      UPDATE standing_rules SET active = 0 WHERE id = ?
+    `);
+    this.stmtSelectActiveRulesByScope = this.db.prepare(`
+      SELECT id, scope, rule, active, created_at
+      FROM standing_rules
+      WHERE scope = ? AND active = 1
+    `);
+    this.stmtInsertStandingRule = this.db.prepare(`
+      INSERT INTO standing_rules (id, scope, rule, active, created_at)
+      VALUES (?, ?, ?, 1, ?)
+    `);
+    this.stmtClearAllStandingRules = this.db.prepare(`
+      UPDATE standing_rules SET active = 0 WHERE active = 1
+    `);
+    this.stmtClearStandingRulesByScope = this.db.prepare(`
+      UPDATE standing_rules SET active = 0 WHERE active = 1 AND scope = ?
+    `);
+    this.stmtListActiveRulesForAgent = this.db.prepare(`
+      SELECT id, scope, rule, active, created_at
+      FROM standing_rules
+      WHERE active = 1 AND (scope = 'global' OR scope = ?)
+      ORDER BY created_at ASC, rowid ASC
+    `);
+    this.stmtListAllActiveRules = this.db.prepare(`
+      SELECT id, scope, rule, active, created_at
+      FROM standing_rules
+      WHERE active = 1
+      ORDER BY created_at ASC, rowid ASC
+    `);
+    this.stmtListAllRules = this.db.prepare(`
+      SELECT id, scope, rule, active, created_at
+      FROM standing_rules
+      ORDER BY created_at ASC, rowid ASC
+    `);
   }
 
   private initSchema(): void {
@@ -150,11 +242,7 @@ export class EmanateStore {
     const status = input.status ?? (role === 'user' ? 'completed' : 'streaming');
     const createdAt = input.createdAt ?? Date.now();
 
-    const stmt = this.db.prepare(`
-      INSERT INTO messages (id, role, agent_id, content, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    const info = stmt.run(id, role, agentId, content, status, createdAt);
+    const info = this.stmtInsertMessage.run(id, role, agentId, content, status, createdAt);
 
     return {
       seq: Number(info.lastInsertRowid),
@@ -168,60 +256,35 @@ export class EmanateStore {
   }
 
   appendMessageDelta(id: string, delta: string): MessageRow {
-    const updateStmt = this.db.prepare(`
-      UPDATE messages
-      SET content = content || ?
-      WHERE id = ?
-    `);
-    const res = updateStmt.run(delta, id);
-    if (res.changes === 0) {
+    const row = this.stmtAppendMessageDelta.get(delta, id) as MessageRow | undefined;
+    if (!row) {
       throw new Error(`Message not found: ${id}`);
     }
-    return this.getMessageById(id)!;
+    return row;
   }
 
   updateMessageContent(id: string, content: string): MessageRow {
-    const updateStmt = this.db.prepare(`
-      UPDATE messages
-      SET content = ?
-      WHERE id = ?
-    `);
-    const res = updateStmt.run(content, id);
-    if (res.changes === 0) {
+    const row = this.stmtUpdateMessageContent.get(content, id) as MessageRow | undefined;
+    if (!row) {
       throw new Error(`Message not found: ${id}`);
     }
-    return this.getMessageById(id)!;
+    return row;
   }
 
   markMessageStatus(id: string, status: MessageStatus): MessageRow {
-    const updateStmt = this.db.prepare(`
-      UPDATE messages
-      SET status = ?
-      WHERE id = ?
-    `);
-    const res = updateStmt.run(status, id);
-    if (res.changes === 0) {
+    const row = this.stmtMarkMessageStatus.get(status, id) as MessageRow | undefined;
+    if (!row) {
       throw new Error(`Message not found: ${id}`);
     }
-    return this.getMessageById(id)!;
+    return row;
   }
 
   getMessageById(id: string): MessageRow | undefined {
-    const stmt = this.db.prepare(`
-      SELECT seq, id, role, agent_id, content, status, created_at
-      FROM messages
-      WHERE id = ?
-    `);
-    return stmt.get(id) as MessageRow | undefined;
+    return this.stmtGetMessageById.get(id) as MessageRow | undefined;
   }
 
   listMessages(): MessageRow[] {
-    const stmt = this.db.prepare(`
-      SELECT seq, id, role, agent_id, content, status, created_at
-      FROM messages
-      ORDER BY seq ASC
-    `);
-    return stmt.all() as MessageRow[];
+    return this.stmtListMessages.all() as MessageRow[];
   }
 
   addStandingRule(input: AddStandingRuleInput): StandingRuleRow {
@@ -232,25 +295,12 @@ export class EmanateStore {
 
     const tx = this.db.transaction(() => {
       if (input.supersedeRuleIds && input.supersedeRuleIds.length > 0) {
-        const deactivateById = this.db.prepare(`
-          UPDATE standing_rules SET active = 0 WHERE id = ?
-        `);
         for (const oldId of input.supersedeRuleIds) {
-          deactivateById.run(oldId);
+          this.stmtDeactivateRuleById.run(oldId);
         }
       }
 
-      const existingInScope = this.db
-        .prepare(`
-          SELECT id, scope, rule, active, created_at
-          FROM standing_rules
-          WHERE scope = ? AND active = 1
-        `)
-        .all(scope) as StandingRuleRow[];
-
-      const deactivateStmt = this.db.prepare(`
-        UPDATE standing_rules SET active = 0 WHERE id = ?
-      `);
+      const existingInScope = this.stmtSelectActiveRulesByScope.all(scope) as StandingRuleRow[];
 
       for (const existing of existingInScope) {
         let shouldSupersede = false;
@@ -263,16 +313,11 @@ export class EmanateStore {
         }
 
         if (shouldSupersede) {
-          deactivateStmt.run(existing.id);
+          this.stmtDeactivateRuleById.run(existing.id);
         }
       }
 
-      this.db
-        .prepare(`
-          INSERT INTO standing_rules (id, scope, rule, active, created_at)
-          VALUES (?, ?, ?, 1, ?)
-        `)
-        .run(id, scope, rule, createdAt);
+      this.stmtInsertStandingRule.run(id, scope, rule, createdAt);
     });
 
     tx();
@@ -294,47 +339,27 @@ export class EmanateStore {
   }
 
   deactivateStandingRule(id: string): void {
-    this.db.prepare(`UPDATE standing_rules SET active = 0 WHERE id = ?`).run(id);
+    this.stmtDeactivateRuleById.run(id);
   }
 
-  clearStandingRules(scope?: RuleScope): number {
-    if (!scope || scope === 'global') {
-      const res = this.db.prepare(`UPDATE standing_rules SET active = 0 WHERE active = 1`).run();
+  clearStandingRules(scope?: ClearRuleScope): number {
+    if (!scope || scope === 'all') {
+      const res = this.stmtClearAllStandingRules.run();
       return res.changes;
     }
-    const res = this.db
-      .prepare(`UPDATE standing_rules SET active = 0 WHERE active = 1 AND scope = ?`)
-      .run(scope);
+    const res = this.stmtClearStandingRulesByScope.run(scope);
     return res.changes;
   }
 
   listActiveStandingRules(agentId?: AgentId): StandingRuleRow[] {
     if (agentId) {
-      const stmt = this.db.prepare(`
-        SELECT id, scope, rule, active, created_at
-        FROM standing_rules
-        WHERE active = 1 AND (scope = 'global' OR scope = ?)
-        ORDER BY created_at ASC, rowid ASC
-      `);
-      return stmt.all(agentId) as StandingRuleRow[];
+      return this.stmtListActiveRulesForAgent.all(agentId) as StandingRuleRow[];
     }
-
-    const stmt = this.db.prepare(`
-      SELECT id, scope, rule, active, created_at
-      FROM standing_rules
-      WHERE active = 1
-      ORDER BY created_at ASC, rowid ASC
-    `);
-    return stmt.all() as StandingRuleRow[];
+    return this.stmtListAllActiveRules.all() as StandingRuleRow[];
   }
 
   listAllStandingRules(): StandingRuleRow[] {
-    const stmt = this.db.prepare(`
-      SELECT id, scope, rule, active, created_at
-      FROM standing_rules
-      ORDER BY created_at ASC, rowid ASC
-    `);
-    return stmt.all() as StandingRuleRow[];
+    return this.stmtListAllRules.all() as StandingRuleRow[];
   }
 
   reset(): void {

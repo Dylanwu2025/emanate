@@ -185,6 +185,15 @@ function renderMarkdownSafe(rawText) {
       continue;
     }
 
+    const headingMatch = rawLine.match(/^\s*(#{1,4})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      closeLists();
+      const level = Math.min(headingMatch[1].length + 2, 5);
+      htmlParts.push(`<h${level} class="md-heading">${renderInlineMarkdown(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
     const ulMatch = rawLine.match(/^\s*[-*•]\s+(.*)$/);
     if (ulMatch) {
       flushParagraph();
@@ -224,18 +233,36 @@ function renderMarkdownSafe(rawText) {
   return htmlParts.join('');
 }
 
-function updateBubbleContent(bubbleEl, msg) {
-  bubbleEl.innerHTML = renderMarkdownSafe(msg.content || '');
-  if (msg.status === 'streaming') {
+function getOrCreateTypingDots(bubbleEl) {
+  if (!bubbleEl._typingDotsEl) {
     const dots = document.createElement('span');
     dots.className = 'typing-dots';
     dots.setAttribute('aria-hidden', 'true');
     dots.innerHTML = '<span></span><span></span><span></span>';
+    bubbleEl._typingDotsEl = dots;
+  }
+  return bubbleEl._typingDotsEl;
+}
+
+function updateBubbleContent(bubbleEl, msg) {
+  const dots = bubbleEl._typingDotsEl;
+  if (dots && dots.parentNode) {
+    dots.parentNode.removeChild(dots);
+  }
+
+  const nextContent = msg.content || '';
+  if (bubbleEl._renderedContent !== nextContent) {
+    bubbleEl.innerHTML = renderMarkdownSafe(nextContent);
+    bubbleEl._renderedContent = nextContent;
+  }
+
+  if (msg.status === 'streaming') {
+    const typingDots = getOrCreateTypingDots(bubbleEl);
     const lastBlock = bubbleEl.lastElementChild;
     if (lastBlock && (lastBlock.tagName === 'P' || lastBlock.tagName === 'LI')) {
-      lastBlock.appendChild(dots);
+      lastBlock.appendChild(typingDots);
     } else {
-      bubbleEl.appendChild(dots);
+      bubbleEl.appendChild(typingDots);
     }
   }
 }
@@ -339,11 +366,20 @@ async function sendUserMessage(rawText) {
   hideMentionMenu();
   inputEl.focus();
 
-  await fetch('/api/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  });
+  try {
+    const res = await fetch('/api/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!res.ok && !inputEl.value) {
+      inputEl.value = rawText;
+    }
+  } catch {
+    if (!inputEl.value) {
+      inputEl.value = rawText;
+    }
+  }
 }
 
 formEl.addEventListener('submit', (e) => {
@@ -373,17 +409,19 @@ function insertMentionIntoComposer(mentionText) {
   const after = inputEl.value.slice(end);
 
   const atMatch = before.match(/(?:^|\s)@([a-zA-Z]*)$/);
+  let prefix;
   if (atMatch) {
     const replaceStart = before.lastIndexOf('@');
-    inputEl.value = before.slice(0, replaceStart) + mentionText + after;
+    prefix = before.slice(0, replaceStart) + mentionText;
   } else {
     const needsSpace = before.length > 0 && !/\s$/.test(before);
-    inputEl.value = before + (needsSpace ? ' ' : '') + mentionText + after;
+    prefix = before + (needsSpace ? ' ' : '') + mentionText;
   }
 
+  inputEl.value = prefix + after;
   hideMentionMenu();
   inputEl.focus();
-  const cursorPos = inputEl.value.length;
+  const cursorPos = prefix.length;
   inputEl.setSelectionRange(cursorPos, cursorPos);
 }
 
@@ -447,15 +485,31 @@ document.querySelectorAll('[data-prompt]').forEach((chip) => {
 });
 
 stopBtnEl.addEventListener('click', async () => {
-  await fetch('/api/stop', { method: 'POST' });
-  inputEl.focus();
+  stopBtnEl.disabled = true;
+  try {
+    await fetch('/api/stop', { method: 'POST' });
+  } catch {
+    // Ignore network error
+  } finally {
+    stopBtnEl.disabled = false;
+    inputEl.focus();
+  }
 });
 
 resetBtnEl.addEventListener('click', async () => {
-  await fetch('/api/reset', { method: 'POST' });
-  messagesById.clear();
-  renderAllMessages(true);
-  inputEl.focus();
+  resetBtnEl.disabled = true;
+  try {
+    const res = await fetch('/api/reset', { method: 'POST' });
+    if (res.ok) {
+      messagesById.clear();
+      renderAllMessages(true);
+    }
+  } catch {
+    // Ignore network error
+  } finally {
+    resetBtnEl.disabled = false;
+    inputEl.focus();
+  }
 });
 
 fetchInitialState().then(() => {

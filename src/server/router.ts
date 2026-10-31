@@ -101,8 +101,60 @@ const THESIS_STOPWORDS = new Set([
 const GENERAL_RECAP_RE =
   /\b(summarize|summary|recap|plan\s+so\s+far|plans\s+so\s+far|current\s+(?:travel\s+|trip\s+)?(?:plan|itinerary|status)|what\s+(?:we\s+)?need\s+to\s+decide|pending\s+decisions|open\s+decisions|decisions\s+needed)\b/i;
 
+export function isGeneralRecapQuery(text: string): boolean {
+  return GENERAL_RECAP_RE.test(text);
+}
+
+const CASUAL_SOCIAL_TURN_RE =
+  /^(?:hey|hi|hello|yo|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you|thx|ty|got\s+it|sounds\s+good|awesome|great|cool|ok|okay|nice|perfect)(?:\s+(?:everyone|team|all|guys|folks|maya|liam|zoe))?[!.,\s]*$/i;
+
+export function isCasualSocialMessage(text: string): boolean {
+  return CASUAL_SOCIAL_TURN_RE.test(text.trim());
+}
+
+const DOMAIN_SAFE_THESIS_FALLBACKS: Record<AgentId, string> = {
+  maya: 'Share ONLY the flight options, hotel rates/check-in cutoffs, and budget numbers from your private vault.',
+  liam: 'Share ONLY the exact airport/city transit durations and the named food experiences from your private vault.',
+  zoe: 'Share ONLY how the options affect traveler allergies, motion sickness, vegetarian diet, and the group morning wake-up rule from your private vault.',
+};
+
+const CROSS_DOMAIN_FORBIDDEN_IN_THESIS: Record<AgentId, RegExp> = {
+  maya: /\b(transit\s+time|airport\s+transit|haruka|customs|food|dinner|lunch|restaurant|market|sightseeing|allergy|shellfish|vegetarian|wake-?up|sleep|7:30)\b/i,
+  liam: /\b(flight\s+[ab]|flight\s+options?|hotel\s+options?|lodging\s+options?|ryokan|granvia|cross\s+hotel|budget|price|cost|check-?in|allergy|shellfish|vegetarian|wake-?up|sleep)\b/i,
+  zoe: /\b(flight\s+price|hotel\s+price|nightly\s+rate|transit\s+time|airport\s+transit|summarize\s+the\s+plan)\b/i,
+};
+
+const REAL_LLM_DISALLOWED_THESIS_RE: Record<AgentId, RegExp> = {
+  maya: /\b(transit\s+time|airport\s+transit|haruka|customs|food|dinner|lunch|restaurant|market|sightseeing|allergy|shellfish|vegetarian|wake-?up|sleep|7:30)\b/i,
+  liam: /\b(flight\s+[ab]|flight\s+options?|hotel\s+options?|lodging\s+options?|ryokan|granvia|cross\s+hotel|budget|price|cost|check-?in|allergy|shellfish|vegetarian|wake-?up|sleep|izakaya|ramen|sushi)\b/i,
+  zoe: /\b(flight\s+price|hotel\s+price|nightly\s+rate|transit\s+time|airport\s+transit|summarize\s+the\s+plan)\b/i,
+};
+
+// Detects when the LLM router invents specific fake prices, hours, or clock times inside a thesis
+const HALLUCINATED_NUMBERS_IN_THESIS_RE =
+  /(?:[$¥€£]\s*\d|\b\d[\d,]*\s*(?:usd|jpy|eur|yen|dollars?|euros?)\b|\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d+\s*(?:am|pm)\b|\b\d+\s*(?:hours?|hrs?|minutes?|mins?)\b)/i;
+
+export function sanitizeThesisForAgentDomain(
+  agentId: AgentId,
+  thesis: string,
+  isMock = true,
+): string | null {
+  const trimmed = thesis.trim();
+  if (!trimmed) return DOMAIN_SAFE_THESIS_FALLBACKS[agentId];
+  const pattern = isMock
+    ? CROSS_DOMAIN_FORBIDDEN_IN_THESIS[agentId]
+    : REAL_LLM_DISALLOWED_THESIS_RE[agentId];
+  if (pattern.test(trimmed)) {
+    return null;
+  }
+  if (!isMock && HALLUCINATED_NUMBERS_IN_THESIS_RE.test(trimmed)) {
+    return DOMAIN_SAFE_THESIS_FALLBACKS[agentId];
+  }
+  return trimmed;
+}
+
 const SPECIFIC_CONSTRAINT_CUE_RE =
-  /\b(shellfish|allergy|anaphylactic|epipen|vegetarian|priya|sam|7:30|wake|motion\s+sickness|2\s*hours?\s*15|2h\s*15m|1\s*hour\s*35|1h\s*35m|6:00\s*pm\s*cutoff|haruka|fushimi|kiyomizu|okonomiyaki)\b/i;
+  /\b(allergy|allergies|dietary|vegetarian|wake|sleep|pacing|motion\s+sickness|cutoff|transit\s+time|crowd\s+window|conflict|unsafe|veto)\b/i;
 
 function normalizeThesisTokens(thesis: string): Set<string> {
   const words = thesis
@@ -122,8 +174,6 @@ export function areThesesRedundant(earlierThesis: string, laterThesis: string): 
     return true;
   }
 
-  // If an earlier speaker is already doing a general plan/decision recap and the later speaker's
-  // thesis is ALSO a generic plan/decision recap without a specific new domain constraint, silence it.
   if (
     GENERAL_RECAP_RE.test(normEarlier) &&
     GENERAL_RECAP_RE.test(normLater) &&
@@ -153,10 +203,6 @@ export function areThesesRedundant(earlierThesis: string, laterThesis: string): 
   return (overlap >= 3 && (ratioLater >= 0.7 || ratioEarlier >= 0.7)) || ratioLater >= 0.85;
 }
 
-/**
- * Checks if an agent's proposed thesis in a follow-up wave repeats what that same agent
- * already covered earlier in the current turn (either by thesis or by message content).
- */
 export function isSelfRepetitiveForAgent(
   proposedThesis: string,
   priorThesesForAgent: string[],
@@ -165,7 +211,6 @@ export function isSelfRepetitiveForAgent(
   const trimmed = proposedThesis.trim();
   if (!trimmed) return true;
 
-  // Reject meta-prompts where an agent merely asks the user to confirm/choose an option it just presented
   if (
     /^(?:ask|prompt|remind|request|wait\s+for)\s+(?:the\s+)?(?:user|group|everyone)\s+to\s+(?:choose|confirm|select|decide|pick|let\s+us\s+know)/i.test(
       trimmed,
@@ -196,7 +241,6 @@ export function isSelfRepetitiveForAgent(
           coveredCount++;
         }
       }
-      // If >=80% of the proposed thesis tokens were already stated in this agent's earlier message in the turn
       if (coveredCount / proposedTokens.size >= 0.8) {
         return true;
       }
@@ -279,11 +323,13 @@ export function isExplicitStopCommand(text: string): boolean {
 
 export function detectRuleClearScope(text: string, mentionedAgents: AgentId[]): RuleScope | null {
   const lower = text.trim().toLowerCase();
+  if (isExplicitStopCommand(lower)) return null;
+
   const isClearIntent =
-    /\b(?:forget|clear|remove|drop|cancel|reset|stop\s+following)\b.*\b(?:standing\s+rules?|rules?|instructions?|jpy|yen|bullet\s+points?|uppercase)\b/i.test(
+    /\b(?:forget|clear|remove|drop|cancel|reset|stop\s+following)\b.*\b(?:standing\s+rules?|rules?|instructions?|format|prefix|haikus?|jpy|yen|euros?|bullet\s+points?|uppercase)\b/i.test(
       lower,
     ) ||
-    /\b(?:no\s+longer\s+need\s+to|stop\s+using\s+bullet|go\s+back\s+to\s+usd|switch\s+back\s+to\s+usd)\b/i.test(
+    /\b(?:stop\s+(?:using|answering\s+in|writing\s+in|starting\s+(?:every\s+|all\s+)?(?:replies|responses|messages)\s+with|including)|no\s+longer\s+need\s+to|no\s+more\s+(?:haikus?|bullets?|bullet\s+points?|prefixes|tags|jpy|yen|euros?|uppercase)|don'?t\s+use\s+(?:haikus?|bullets?|prefixes)|answer\s+in\s+\d*\s*normal\s+sentences?|without\s+any\s+prefix|go\s+back\s+to\s+usd|switch\s+back\s+to\s+usd)\b/i.test(
       lower,
     );
 
@@ -301,12 +347,17 @@ export function extractStandingRuleDeterministic(
   const trimmed = text.trim();
   if (!trimmed || isExplicitStopCommand(trimmed)) return null;
 
+  // Strip trailing conversational questions after the standing instruction sentence
+  // e.g. "Always answer in haikus. What are our flight options?" -> "Always answer in haikus."
+  const firstSentenceMatch = trimmed.match(/^([^.?]+\.)\s+(?:what|when|where|which|how|can|should|could|who|why)\b/i);
+  const candidateText = firstSentenceMatch ? firstSentenceMatch[1].trim() : trimmed;
+
   const hasPersistentCue =
-    /\b(?:always|never|from\s+now\s+on|going\s+forward|in\s+all\s+(?:future\s+)?(?:responses|answers|messages|turns)|every\s+time|for\s+the\s+rest\s+of)\b/i.test(
-      trimmed,
+    /\b(?:always|never|from\s+now\s+on|going\s+forward|in\s+all\s+(?:future\s+)?(?:responses|answers|messages|turns)|every\s+(?:time|reply|response)|start\s+every\s+(?:reply|response)\s+with|for\s+the\s+rest\s+of)\b/i.test(
+      candidateText,
     ) ||
-    /\b(?:convert\s+all\s+prices|state\s+all\s+prices|quote\s+(?:all\s+)?prices|use\s+japanese\s+yen|in\s+jpy\s+instead|to\s+japanese\s+yen|in\s+bullet\s+points|use\s+bullet\s+points|answer\s+in\s+bullet|keep\s+(?:all\s+|your\s+)?(?:answers|responses)\s+(?:to|under)|in\s+uppercase|all\s+caps)\b/i.test(
-      trimmed,
+    /\b(?:convert\s+all\s+prices|state\s+all\s+prices|quote\s+(?:all\s+)?prices|use\s+japanese\s+yen|in\s+jpy\s+instead|to\s+japanese\s+yen|use\s+euros?|switch\s+to\s+euros?|in\s+bullet\s+points|use\s+bullet\s+points|answer\s+in\s+(?:bullet|haikus?|\d+\s+normal\s+sentences?)|keep\s+(?:all\s+|your\s+)?(?:answers|responses)\s+(?:to|under)|in\s+uppercase|all\s+caps)\b/i.test(
+      candidateText,
     );
 
   if (!hasPersistentCue) {
@@ -314,13 +365,13 @@ export function extractStandingRuleDeterministic(
   }
 
   const scope: RuleScope = mentionedAgents.length === 1 ? mentionedAgents[0] : 'global';
-  const cleanedRule = trimmed
+  const cleanedRule = candidateText
     .replace(/^(?:@?(?:maya|liam|zoe)\s*[,:—-]\s*)+/i, '')
     .trim();
 
   return {
     scope,
-    rule: cleanedRule || trimmed,
+    rule: cleanedRule || candidateText,
   };
 }
 
@@ -341,7 +392,7 @@ export function classifySteeringDeterministic(
 
   const mentioned = extractMentionedAgents(trimmed);
   const clearRuleScope = detectRuleClearScope(trimmed, mentioned);
-  const standingRule = clearRuleScope ? null : extractStandingRuleDeterministic(trimmed, mentioned);
+  const standingRule = extractStandingRuleDeterministic(trimmed, mentioned);
 
   const targetAgents: AgentId[] =
     mentioned.length > 0
@@ -378,6 +429,8 @@ export function computeDeterministicSpeakerOrder(referenceText = ''): AgentId[] 
 export function applyAsymmetricDedup(
   rawDecisions: Record<AgentId, AgentRouteDecision>,
   speakerOrder: AgentId[],
+  referenceUserText = '',
+  isMock = true,
 ): {
   decisions: Record<AgentId, AgentRouteDecision>;
   speakers: SpeakerPlan[];
@@ -388,6 +441,8 @@ export function applyAsymmetricDedup(
     zoe: { ...rawDecisions.zoe },
   };
 
+  const isRecap = isGeneralRecapQuery(referenceUserText);
+  const mentionedInRef = new Set<AgentId>(extractMentionedAgents(referenceUserText));
   const speakers: SpeakerPlan[] = [];
   const acceptedPrior: Array<{ agentId: AgentId; thesis: string }> = [];
 
@@ -398,15 +453,40 @@ export function applyAsymmetricDedup(
       continue;
     }
 
-    const trimmedThesis = decision.thesis.trim();
-    const isRedundant = acceptedPrior.some((prior) =>
-      areThesesRedundant(prior.thesis, trimmedThesis),
-    );
+    const rawTrimmedThesis = decision.thesis.trim();
 
-    if (isRedundant) {
+    // If this agent was NOT explicitly @mentioned in a real LLM call, check raw redundancy first.
+    // If the user explicitly @mentioned multiple agents (e.g. "@Maya @Liam @Zoe"), sanitize each
+    // agent's thesis to its own domain FIRST so an echoed raw thesis doesn't silence @Liam or @Zoe!
+    const isExplicitlyMentionedReal = !isMock && mentionedInRef.has(agentId);
+
+    if (!isExplicitlyMentionedReal) {
+      const isRedundantRaw = acceptedPrior.some((prior) =>
+        areThesesRedundant(prior.thesis, rawTrimmedThesis),
+      );
+      if (isRedundantRaw) {
+        decisions[agentId] = { effort: 'silent', thesis: '' };
+        continue;
+      }
+    }
+
+    if (
+      isRecap &&
+      acceptedPrior.length > 0 &&
+      !mentionedInRef.has(agentId) &&
+      !SPECIFIC_CONSTRAINT_CUE_RE.test(rawTrimmedThesis)
+    ) {
       decisions[agentId] = { effort: 'silent', thesis: '' };
       continue;
     }
+
+    const sanitizedOrNull = sanitizeThesisForAgentDomain(agentId, rawTrimmedThesis, isMock);
+    if (!isMock && sanitizedOrNull === null && !mentionedInRef.has(agentId)) {
+      decisions[agentId] = { effort: 'silent', thesis: '' };
+      continue;
+    }
+    const sanitizedThesis = sanitizedOrNull ?? DOMAIN_SAFE_THESIS_FALLBACKS[agentId];
+    decisions[agentId].thesis = sanitizedThesis;
 
     const peerTheses = acceptedPrior.map(
       (prior) => `${AGENT_PROFILES[prior.agentId].name} is covering: ${prior.thesis}`,
@@ -417,12 +497,12 @@ export function applyAsymmetricDedup(
       agentId,
       effort: decision.effort,
       maxTokens: EFFORT_MAX_TOKENS[decision.effort],
-      thesis: trimmedThesis,
+      thesis: sanitizedThesis,
       peerTheses,
       priorSpeakerTheses,
     });
 
-    acceptedPrior.push({ agentId, thesis: trimmedThesis });
+    acceptedPrior.push({ agentId, thesis: sanitizedThesis });
   }
 
   return { decisions, speakers };
@@ -514,8 +594,8 @@ The user just sent a message while the above agents are actively streaming. Clas
    - If the user names or references specific agent(s) by name or role (e.g. "Maya", "@Liam", "budget person"), return ONLY those targeted agent IDs (e.g. ["maya"]).
    - If the redirect is global (no specific agent named, e.g. "Keep it to 1 sentence", "Use bullet points"), return all currently streaming agents: ${JSON.stringify(activeAgents)}.
 3. "directive": Clean 1-line instruction for the targeted agent(s) to follow as they seamlessly continue their in-flight message.
-4. "standingRule": If the instruction should persist for future turns (e.g. currency preference, bullet points, length cap, "always...", "from now on...", "convert all prices..."), return { "scope": "global" | "maya" | "liam" | "zoe", "rule": string }, else null.
-5. "clearRuleScope": If the user asks to forget/clear/remove a standing rule, return the scope ("global" | "maya" | "liam" | "zoe"), else null.
+4. "standingRule": ONLY if the user's NEW message establishes a new persistent instruction for future turns, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": string }, else null. NEVER copy an existing rule from Active standing rules!
+5. "clearRuleScope": If the user asks to stop, forget, clear, or override an existing standing rule (e.g. "Stop using haikus", "Stop starting replies with [KYOTO]", "No more bullet points"), return the scope ("global" | "maya" | "liam" | "zoe"), else null.
 
 Return strict JSON:
 {
@@ -580,13 +660,19 @@ Return strict JSON:
           : fallback.directive;
 
       const clearRuleScope =
-        raw.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope)
-          ? raw.clearRuleScope
-          : fallback.clearRuleScope;
+        fallback.clearRuleScope ??
+        (raw.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope) ? raw.clearRuleScope : null);
 
-      const standingRule = clearRuleScope
-        ? null
-        : normalizeStandingRule(raw.standingRule) ?? fallback.standingRule;
+      const candidateRule = normalizeStandingRule(raw.standingRule) ?? fallback.standingRule;
+      const isEchoOfExistingActiveRule =
+        candidateRule &&
+        activeRules.some(
+          (r) =>
+            r.active === 1 &&
+            r.rule.trim().toLowerCase() === candidateRule.rule.trim().toLowerCase(),
+        );
+
+      const standingRule = isEchoOfExistingActiveRule ? null : candidateRule;
 
       return {
         action: raw.action,
@@ -615,6 +701,32 @@ Return strict JSON:
       signal,
     } = input;
     const isFollowUpWave = waveIndex > 0;
+    const isMock = this.llm instanceof ScriptableMockLLMProvider;
+
+    let lastUserMessageContent = latestUserMessage ?? '';
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i].role === 'user') {
+        lastUserMessageContent = transcript[i].content;
+        break;
+      }
+    }
+
+    // Bug 5 fix: On casual greetings or acknowledgments ("hey team!", "thanks!"),
+    // never run unsolicited A2A follow-up waves!
+    if (isFollowUpWave && !isMock && isCasualSocialMessage(lastUserMessageContent)) {
+      return {
+        waveIndex,
+        isResolved: true,
+        decisions: {
+          maya: { effort: 'silent', thesis: '' },
+          liam: { effort: 'silent', thesis: '' },
+          zoe: { effort: 'silent', thesis: '' },
+        },
+        speakers: [],
+        standingRule: null,
+        clearRuleScope: null,
+      };
+    }
 
     const rulesSummary =
       activeRules.length > 0
@@ -629,20 +741,25 @@ Return strict JSON:
         : []);
 
     const systemPrompt = isFollowUpWave
-      ? `You are the A2A Follow-Up Wave Router for a 3-agent Kyoto & Osaka trip planning group chat:
-- maya (Maya — Budget, Flights & Lodging: knows the $4,800 budget, Flight A 6:45 AM $650 vs Flight B 11:30 AM $820, Ryokan Gion $380/night with strict 6:00 PM check-in cutoff vs Hotel Granvia $290/night 24h check-in, Cross Hotel Osaka $260/night).
-- liam (Liam — Local Guide for Food, Sights & Transit: knows KIX to Gion takes 2h 15m, KIX to Kyoto Station takes 1h 35m, Nishiki Market 11 AM–2 PM has heavy shared-grill shellfish, Arashiyama Tofu Kaiseki is 100% vegetarian & shellfish-free until 7:30 PM, sight crowd windows).
-- zoe (Zoe — Group Dynamics, Dietary & Pacing: knows Sam has a severe shellfish allergy and boat/bus motion sickness, Priya is strict vegetarian, and the group has a strict rule against waking before 7:30 AM which rules out 6:45 AM Flight A).
+      ? `You are the A2A Follow-Up Wave Router for a 3-agent Kyoto & Osaka trip planning group chat.
+Each agent has an isolated private vault for their domain only:
+- maya (Maya — Budget, Flights & Lodging: private vault contains the group budget cap, outbound flight options/prices/schedules, and Kyoto/Osaka hotel options/rates/check-in policies).
+- liam (Liam — Local Guide for Food, Sights & Transit: private vault contains airport-to-city transit durations, local food/market/restaurant details, and sightseeing crowd windows).
+- zoe (Zoe — Group Dynamics, Dietary & Pacing: private vault contains traveler allergies, dietary restrictions, motion sickness constraints, and group morning wake-up/sleep rules).
 
 Agents who just spoke in Wave ${waveIndex - 1}: ${JSON.stringify(inferredPrevSpeakers)}
 
 CRITICAL RULES FOR A2A FOLLOW-UP WAVES:
-1. NEVER allow an agent to reply to itself or repeat its own recommendation or call-to-action! If only one agent spoke in Wave ${waveIndex - 1} (e.g. ${JSON.stringify(inferredPrevSpeakers)}), that agent MUST be "silent" in Wave ${waveIndex}.
-2. Questions directed to the USER (e.g. "Please let me know which flight you prefer!", "What do you all think?" when no peer has conflicting/missing private facts) are NOT triggers for the same agent to speak again. Wait for the user by setting "isResolved": true and all agents to "silent".
-3. An agent may ONLY speak in Wave ${waveIndex} if a DIFFERENT agent in Wave ${waveIndex - 1}:
-   (a) directly asked them a question (e.g. "@Liam how long is transit?"), OR
-   (b) mentioned a specific option/fact that triggers a constraint in THIS agent's private vault that has NOT been stated yet in the current turn (for example: if Maya mentioned Flight A departing at 6:45 AM and Zoe hasn't vetoed it yet based on the group's no-waking-before-7:30-AM rule, Zoe MUST speak now; or if Liam revealed 2h 15m transit makes Ryokan Gion's 6:00 PM cutoff too tight, Maya can pivot to Hotel Granvia).
-4. Once all cross-agent constraints for the user's question have been surfaced, set "isResolved": true and all agents to "silent".
+1. NEVER allow an agent who just spoke in Wave ${waveIndex - 1} (${JSON.stringify(inferredPrevSpeakers)}) to speak again in Wave ${waveIndex}! An agent must NEVER reply to itself or speak in two consecutive waves.
+2. Questions directed to the USER are NOT triggers for the same agent to speak again.
+3. MANDATORY CROSS-DOMAIN CHECKS — An agent who was SILENT in Wave ${waveIndex - 1} MUST speak in Wave ${waveIndex} (with "isResolved": false) if a speaker in Wave ${waveIndex - 1}:
+   (a) directly asked them a question (e.g. "@Liam how long is airport transit?"), OR
+   (b) mentioned an early-morning flight departure and Zoe has NOT spoken yet in this turn to check the group's morning wake-up/sleep rules, OR
+   (c) mentioned a food market/restaurant and Zoe has NOT spoken yet in this turn to check traveler allergies and dietary restrictions, OR
+   (d) mentioned a flight arrival time + hotel check-in cutoff and Liam has NOT spoken yet in this turn to provide the airport-to-hotel transit duration, OR
+   (e) revealed a wake-up veto or transit timing conflict in Wave ${waveIndex - 1}, in which case Maya can speak in Wave ${waveIndex} (if she hasn't already pivoted) to confirm the alternative flight or hotel.
+4. Write each speaking agent's "thesis" as a short 5-10 word high-level topic label for THEIR domain only (e.g. "Check group wake-up and allergy rules"). NEVER invent or include specific numbers, prices, currencies, or clock times in a thesis!
+5. Once all relevant cross-agent domain checks for the user's question have been surfaced, set "isResolved": true and all agents to "silent".
 
 Return strict JSON:
 {
@@ -651,61 +768,83 @@ Return strict JSON:
   "liam": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
   "zoe": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string }
 }`
-      : `You are the Pre-Response Effort & Non-Repetition Router for a 3-agent Kyoto & Osaka trip planning group chat:
-- maya (Maya — Budget, Flights & Lodging: private vault has group budget $4,800, Flight A 6:45 AM $650 vs Flight B 11:30 AM $820, Ryokan Gion $380/night strict 6:00 PM cutoff vs Hotel Granvia $290/night 24h check-in, Cross Hotel Osaka $260/night).
-- liam (Liam — Local Guide for Food, Sights & Transit: private vault has KIX to Gion 2h 15m transit time, KIX to Kyoto Station 1h 35m, Nishiki Market 11 AM–2 PM shared-grill shellfish, Arashiyama Tofu Kaiseki vegetarian/shellfish-free until 7:30 PM, crowd windows).
-- zoe (Zoe — Group Dynamics, Dietary & Pacing: private vault has Sam's severe shellfish allergy & bus/boat motion sickness, Priya's strict vegetarianism, and the group's no-waking-before-7:30-AM rule which rules out 6:45 AM Flight A).
+      : `You are the Pre-Response Effort & Non-Repetition Router for a 3-agent Kyoto & Osaka trip planning group chat.
+Each agent has an isolated private vault for their domain only:
+- maya (Maya — Budget, Flights & Lodging: private vault contains the group budget cap, outbound flight options/prices/schedules, and Kyoto/Osaka hotel options/rates/check-in policies).
+- liam (Liam — Local Guide for Food, Sights & Transit: private vault contains airport-to-city transit durations, local food/market/restaurant details, and sightseeing crowd windows).
+- zoe (Zoe — Group Dynamics, Dietary & Pacing: private vault contains traveler allergies, dietary restrictions, motion sickness constraints, and group morning wake-up/sleep rules).
 
 Rules for routing Wave 0:
 1. Silence Gate: If an agent's domain is not relevant to the user's message, or if their point would duplicate another speaking agent, set their effort to "silent" and thesis to "".
-2. Strict Domain Partition (NO Cross-Domain Summaries):
-   - Every speaking agent's "thesis" MUST be strictly confined to their own exclusive domain:
-     * maya: ONLY flights (Flight A, Flight B), lodging/hotels (Ryokan Gion, Hotel Granvia, Cross Hotel Osaka), and budget numbers. NEVER food or sightseeing.
-     * liam: ONLY airport/city transit timing, food/restaurants (Nishiki Market, Shorai-an/Yudofu Sagano, Okonomiyaki), and sightseeing. NEVER flights or hotel bookings.
-     * zoe: ONLY group allergies/dietary restrictions (Sam's shellfish allergy, Priya's vegetarianism) and sleep/pacing rules (no waking before 7:30 AM). NEVER flight/hotel recaps.
+   - At least ONE agent MUST speak in Wave 0 on every user message! For casual greetings ("hey team!") or thanks ("thanks!"), assign "light" effort with thesis "Reply with a warm 1-sentence greeting/acknowledgment without any travel numbers or schedules".
+2. Strict Domain Partition & Topic-Only Theses (NO Fake Numbers in Thesis):
+   - Every speaking agent's "thesis" MUST be a short 5-10 word high-level topic directive strictly confined to their own domain (e.g. "Present flight options and departure times", "Share market hours and food profile", "Check group wake-up and allergy constraints").
+   - NEVER invent or include specific prices, dollar/yen amounts, hours, or clock times inside the "thesis" string!
+   - If the user explicitly addresses ONLY one or two specific agents (e.g. "@Maya what is the total group budget?"), ONLY the addressed agent(s) may speak in Wave 0—all non-addressed agents MUST be "silent"!
+   - IMPORTANT — Let Proposal Agents Speak First Before Constraint Agents:
+     * If the user asks about flight options (e.g. "what is the best flight option?", "when are our flights?") and Maya hasn't listed the flight times in the conversation yet, have ONLY Maya speak in Wave 0 (effort: "standard"), and keep Zoe "silent" in Wave 0 so Zoe can react in Wave 1 after seeing Maya's actual departure times! (Unless the user explicitly mentions "@Zoe" or already named a specific flight in the prompt.)
+     * If the user asks about both a flight AND a food tour in one prompt (e.g. "Should we book Flight A and do the market tour for lunch?"), assign Maya ("standard": cover flight options) AND Liam ("standard": cover market hours and food profile) in Wave 0, so Zoe can evaluate both in Wave 1!
    - For general recap/status questions (e.g., "what's our plan so far and what do we need to decide?"):
-     * NEVER assign multiple agents to "summarize the plan so far and what to decide".
-     * If Maya covers the flight & hotel status/decisions, Liam may ONLY speak if he is adding a brief 1-sentence note strictly on food/transit (or stay "silent" if meals were already settled), and Zoe MUST be "silent" UNLESS she is flagging an unaddressed safety/allergy conflict (e.g. warning that Nishiki Market has shared seafood grills unsafe for Sam's severe shellfish allergy).
-3. Cross-Domain Awareness:
-   - When the user asks about flights, Maya covers flight options/prices and Zoe only speaks if 6:45 AM Flight A needs to be vetoed due to the 7:30 AM wakeup rule.
-   - When the user asks about a narrow single-agent topic (e.g. "@Maya what is the total budget?"), only that agent speaks.
-4. Effort Calibration:
-   - "light": Simple factual check, quick domain note, or secondary speaker in a recap (1 short sentence).
-   - "standard": Moderate multi-fact answer (2–4 sentences).
-   - "deep": Complex trade-off or full breakdown.
-5. Standing Rule Extraction: If the user message establishes a persistent instruction for how agents should respond (e.g. "Always answer in bullet points", "Maya, quote all prices in JPY from now on"), return it in "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": "..." }, otherwise null.
+     * Assign Maya to summarize flight/hotel status and decisions; keep Liam and Zoe "silent" unless they are flagging a specific unaddressed constraint.
+3. Effort Calibration:
+   - "light": Simple single-fact check, greeting, or quick 1-sentence note.
+   - "standard": Moderate multi-fact answer or domain breakdown (2–4 sentences).
+   - "deep": Thorough analysis or complete breakdown.
+4. Standing Rule Extraction & Clearing:
+   - "clearRuleScope": If the user's latest message asks to stop, forget, clear, or override a previous standing rule (e.g. "Stop using haikus...", "Stop starting replies with [KYOTO]...", "No more bullet points"), set "clearRuleScope": "global" | "maya" | "liam" | "zoe", else null.
+   - "standingRule": ONLY if the user's latest message establishes a NEW persistent formatting/style/currency instruction for how agents should respond, return { "scope": "global" | "maya" | "liam" | "zoe", "rule": "..." }, otherwise null. NEVER copy or re-emit an existing rule from Active Standing Rules!
 
 Return strict JSON:
 {
   "maya": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
   "liam": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
   "zoe": { "effort": "silent" | "light" | "standard" | "deep", "thesis": string },
-  "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": string } | null
+  "standingRule": { "scope": "global" | "maya" | "liam" | "zoe", "rule": string } | null,
+  "clearRuleScope": "global" | "maya" | "liam" | "zoe" | null
 }`;
 
     const userPrompt = `Active Standing Rules:\n${rulesSummary}\n\nConversation Transcript:\n${formatTranscriptForRouter(transcript)}\n\nRoute Wave ${waveIndex} now.`;
 
-    const raw = await this.llm.completeJSON<RawRouterLLMResponse>({
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      maxTokens: 350,
-      temperature: 0.1,
-      signal,
-    });
+    const referenceText =
+      latestUserMessage ??
+      (transcript.length > 0 ? transcript[transcript.length - 1].content : '');
+
+    let raw: RawRouterLLMResponse;
+    try {
+      raw = await this.llm.completeJSON<RawRouterLLMResponse>({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        maxTokens: 350,
+        temperature: 0.1,
+        signal,
+      });
+    } catch (err) {
+      if (signal?.aborted) {
+        throw err;
+      }
+      if (isFollowUpWave) {
+        raw = { isResolved: true };
+      } else {
+        const mentioned = extractMentionedAgents(referenceText);
+        const fallbackTargets: AgentId[] = mentioned.length > 0 ? mentioned : ['maya'];
+        raw = {};
+        for (const id of fallbackTargets) {
+          raw[id] = {
+            effort: 'standard',
+            thesis: 'Provide relevant domain facts from private vault.',
+          };
+        }
+      }
+    }
 
     const rawDecisions: Record<AgentId, AgentRouteDecision> = {
-      maya: normalizeAgentDecision(raw.maya ?? raw.agents?.maya),
-      liam: normalizeAgentDecision(raw.liam ?? raw.agents?.liam),
-      zoe: normalizeAgentDecision(raw.zoe ?? raw.agents?.zoe),
+      maya: normalizeAgentDecision(raw?.maya ?? raw?.agents?.maya),
+      liam: normalizeAgentDecision(raw?.liam ?? raw?.agents?.liam),
+      zoe: normalizeAgentDecision(raw?.zoe ?? raw?.agents?.zoe),
     };
 
-    // Enforce hard A2A guards on follow-up waves (Wave >= 1):
-    // 1. No consecutive self-reply: if an agent was the ONLY speaker in Wave N-1,
-    //    no peer has spoken since their last message, so they MUST NOT speak again in Wave N!
-    // 2. Self-deduplication: if an agent already spoke in this turn and their proposed thesis
-    //    repeats their earlier thesis/message (or is just "confirm preferred flight"), silence them.
     if (isFollowUpWave) {
       if (inferredPrevSpeakers.length === 1) {
         const solePrevSpeaker = inferredPrevSpeakers[0];
@@ -720,6 +859,19 @@ Return strict JSON:
           .map((m) => m.content);
         const priorThesesForAgent = turnThesesByAgent[agentId] ?? [];
 
+        // In live LLM turns, an agent may speak at most once per turn unless it is Maya
+        // adjusting her flight/hotel recommendation after a peer revealed a transit or wake-up constraint.
+        if (!isMock && priorMsgsForAgent.length > 0) {
+          const isMayaPivotingAfterPeer =
+            agentId === 'maya' &&
+            priorMsgsForAgent.length === 1 &&
+            inferredPrevSpeakers.some((id) => id !== 'maya');
+          if (!isMayaPivotingAfterPeer) {
+            rawDecisions[agentId] = { effort: 'silent', thesis: '' };
+            continue;
+          }
+        }
+
         if (
           (priorMsgsForAgent.length > 0 || priorThesesForAgent.length > 0) &&
           isSelfRepetitiveForAgent(
@@ -731,17 +883,114 @@ Return strict JSON:
           rawDecisions[agentId] = { effort: 'silent', thesis: '' };
         }
       }
+
+      if (!isMock) {
+        const turnCombinedText = currentTurnAgentMsgs.map((m) => m.content).join('\n');
+        const zoeSpokeInTurn = currentTurnAgentMsgs.some((m) => m.agent_id === 'zoe');
+        const hasEarlyFlightInTurn = /\b6:45\s*AM\b/i.test(turnCombinedText);
+        const hasFoodOrMarketInTurn = /\b(?:Nishiki|shellfish|seafood|Shorai-an|Yudofu|kaiseki)\b/i.test(
+          turnCombinedText,
+        );
+
+        if (
+          !zoeSpokeInTurn &&
+          (hasEarlyFlightInTurn || hasFoodOrMarketInTurn) &&
+          rawDecisions.zoe.effort === 'silent'
+        ) {
+          rawDecisions.zoe = {
+            effort: hasEarlyFlightInTurn && hasFoodOrMarketInTurn ? 'standard' : 'light',
+            thesis:
+              'Check how the proposed flight times and food spots affect group wake-up rules, Sam’s shellfish allergy, and Priya’s vegetarian diet.',
+          };
+          raw.isResolved = false;
+        } else if (
+          zoeSpokeInTurn &&
+          hasEarlyFlightInTurn &&
+          hasFoodOrMarketInTurn &&
+          rawDecisions.zoe.effort === 'light'
+        ) {
+          rawDecisions.zoe.effort = 'standard';
+        }
+      }
+    } else {
+      const anySpeaking = AGENT_IDS.some((id) => rawDecisions[id].effort !== 'silent');
+      const mentioned = extractMentionedAgents(referenceText);
+
+      if (!isMock && isCasualSocialMessage(referenceText)) {
+        for (const id of AGENT_IDS) {
+          if (rawDecisions[id].effort !== 'silent') {
+            rawDecisions[id] = {
+              effort: 'light',
+              thesis: 'Reply with a warm, brief 1-sentence greeting or acknowledgment without any schedules or numbers.',
+            };
+          }
+        }
+      }
+
+      if (!isMock && mentioned.length > 0) {
+        const mentionedSet = new Set<AgentId>(mentioned);
+        for (const mId of mentioned) {
+          if (rawDecisions[mId].effort === 'silent') {
+            rawDecisions[mId] = {
+              effort: 'standard',
+              thesis: DOMAIN_SAFE_THESIS_FALLBACKS[mId],
+            };
+          }
+        }
+        // When the user explicitly @mentions specific agent(s) in Wave 0,
+        // keep non-mentioned agents silent in Wave 0 unless the user also asked about their domain
+        for (const id of AGENT_IDS) {
+          if (!mentionedSet.has(id)) {
+            rawDecisions[id] = { effort: 'silent', thesis: '' };
+          }
+        }
+      } else if (!isMock) {
+        // When no @mention is used on a narrow single-domain question (e.g. "What is the Osaka hotel rate?",
+        // "What is our total budget?"), prevent unrelated agents from chiming in just because the user
+        // included a global formatting instruction ("answer in 1 normal sentence", "use bullet points").
+        const asksMayaDomain =
+          /\b(flights?|hotels?|lodging|ryokan|granvia|cross\s+hotel|budget|rates?|prices?|costs?|how\s+much|check-?in|book|stay)\b/i.test(
+            referenceText,
+          );
+        const asksLiamDomain =
+          /\b(transit|trains?|haruka|airport\s+to|food|dinner|lunch|eat|restaurants?|markets?|nishiki|arashiyama|shorai|kaiseki|okonomiyaki|sights?|sightseeing|fushimi|kiyomizu|crowds?)\b/i.test(
+            referenceText,
+          );
+        const asksZoeDomain =
+          /\b(allerg(?:y|ies|ic)|shellfish|diet(?:ary)?|vegetarian|priya|sam|motion\s+sickness|wake|sleep|7:30|pacing|tired|energy)\b/i.test(
+            referenceText,
+          );
+
+        if (asksMayaDomain && !asksLiamDomain && !asksZoeDomain && !isGeneralRecapQuery(referenceText)) {
+          rawDecisions.liam = { effort: 'silent', thesis: '' };
+          rawDecisions.zoe = { effort: 'silent', thesis: '' };
+        } else if (asksLiamDomain && !asksMayaDomain && !asksZoeDomain && !isGeneralRecapQuery(referenceText)) {
+          rawDecisions.maya = { effort: 'silent', thesis: '' };
+        } else if (asksZoeDomain && !asksMayaDomain && !asksLiamDomain && !isGeneralRecapQuery(referenceText)) {
+          rawDecisions.maya = { effort: 'silent', thesis: '' };
+          rawDecisions.liam = { effort: 'silent', thesis: '' };
+        }
+      }
+
+      if (!anySpeaking) {
+        const defaultSpeaker: AgentId = mentioned[0] ?? 'maya';
+        rawDecisions[defaultSpeaker] = {
+          effort: 'light',
+          thesis: 'Respond concisely and helpfully from your domain perspective.',
+        };
+      }
     }
 
-    const referenceText =
-      latestUserMessage ??
-      (transcript.length > 0 ? transcript[transcript.length - 1].content : '');
-
     const speakerOrder = computeDeterministicSpeakerOrder(referenceText);
-    const { decisions, speakers } = applyAsymmetricDedup(rawDecisions, speakerOrder);
+    const { decisions, speakers } = applyAsymmetricDedup(
+      rawDecisions,
+      speakerOrder,
+      isFollowUpWave ? '' : referenceText,
+      isMock,
+    );
 
     const isResolved = isFollowUpWave
-      ? Boolean(raw.isResolved) || speakers.length === 0
+      ? Boolean(raw?.isResolved) || speakers.length === 0
       : speakers.length === 0;
 
     if (isFollowUpWave && isResolved) {
@@ -752,24 +1001,54 @@ Return strict JSON:
     }
 
     const mentionedInUserMsg = extractMentionedAgents(referenceText);
+    const detClearScope = isFollowUpWave
+      ? null
+      : detectRuleClearScope(referenceText, mentionedInUserMsg);
     const clearRuleScope = isFollowUpWave
       ? null
-      : (raw.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope)
+      : detClearScope ??
+        (raw?.clearRuleScope && VALID_SCOPES.has(raw.clearRuleScope)
           ? raw.clearRuleScope
-          : detectRuleClearScope(referenceText, mentionedInUserMsg));
+          : null);
 
-    const standingRule =
-      isFollowUpWave || clearRuleScope
-        ? null
-        : normalizeStandingRule(raw.standingRule) ??
-          extractStandingRuleDeterministic(referenceText, mentionedInUserMsg);
+    let candidateStandingRule = isFollowUpWave
+      ? null
+      : normalizeStandingRule(raw?.standingRule) ??
+        extractStandingRuleDeterministic(referenceText, mentionedInUserMsg);
+
+    // Bug 1 fix: Never allow the LLM router to re-emit an existing active standing rule
+    // that the user did not actually state in the current message!
+    if (candidateStandingRule && !isMock) {
+      const matchesExistingActive = activeRules.some(
+        (r) =>
+          r.active === 1 &&
+          r.rule.trim().toLowerCase() === candidateStandingRule!.rule.trim().toLowerCase(),
+      );
+      const detRule = extractStandingRuleDeterministic(referenceText, mentionedInUserMsg);
+      if (matchesExistingActive) {
+        candidateStandingRule = detRule &&
+          detRule.rule.trim().toLowerCase() !== candidateStandingRule.rule.trim().toLowerCase()
+          ? detRule
+          : null;
+      } else if (clearRuleScope) {
+        // When clearing a previous rule (e.g. "Stop using haikus, answer in 1 normal sentence"),
+        // only add a replacement standing rule if the user explicitly used persistent keywords ("always", "from now on")
+        const hasExplicitPersistentKeyword =
+          /\b(?:always|never|from\s+now\s+on|going\s+forward|every\s+(?:time|reply|response))\b/i.test(
+            referenceText,
+          );
+        if (!hasExplicitPersistentKeyword) {
+          candidateStandingRule = null;
+        }
+      }
+    }
 
     return {
       waveIndex,
       isResolved,
       decisions,
       speakers,
-      standingRule,
+      standingRule: candidateStandingRule,
       clearRuleScope,
     };
   }

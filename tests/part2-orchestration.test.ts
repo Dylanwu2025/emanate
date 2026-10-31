@@ -164,7 +164,7 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
         'Maya is covering: Cover Flight B $820 price and Ryokan Gion 6:00 PM check-in cutoff',
       );
       expect(liamSysPrompt).toContain(
-        'NEVER list, summarize, or repeat flight options/prices or hotel bookings/nightly rates/check-in policies',
+        'Do not list or repeat flight options/prices or hotel bookings/nightly rates/check-in policies',
       );
     });
 
@@ -556,6 +556,71 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
       expect(res.agentMessages).toHaveLength(2);
       expect(res.agentMessages.map((m) => m.agentId)).toEqual(['maya', 'zoe']);
     });
+
+    it('guarantees router prompts contain zero private vault facts so Maya never learns Zoe 7:30 AM rule before Zoe speaks', async () => {
+      const orchestrator = new GroupChatOrchestrator({ store, llm: mockLLM });
+
+      mockLLM.enqueueJSON({
+        response: {
+          maya: {
+            effort: 'standard',
+            thesis: 'Present the flight options, departure times, and price trade-offs from your vault',
+          },
+          liam: { effort: 'silent', thesis: '' },
+          zoe: {
+            effort: 'light',
+            thesis: 'Evaluate how the flight departure times fit the group morning wake-up rules',
+          },
+        },
+      });
+
+      mockLLM.enqueueStream({
+        match: /You are Maya/,
+        chunks: [
+          'Flight A (ANA NH-105) departs at 6:45 AM for $650/person, while Flight B (JAL JL-701) departs at 11:30 AM for $820/person.',
+        ],
+      });
+
+      mockLLM.enqueueStream({
+        match: /You are Zoe/,
+        chunks: [
+          'Since our group has a strict rule against waking up before 7:30 AM, 6:45 AM Flight A is out—Flight B at 11:30 AM is the best choice!',
+        ],
+      });
+
+      mockLLM.enqueueJSON({
+        response: {
+          isResolved: true,
+          maya: { effort: 'silent', thesis: '' },
+          liam: { effort: 'silent', thesis: '' },
+          zoe: { effort: 'silent', thesis: '' },
+        },
+      });
+
+      await orchestrator.handleUserMessage('what is the best flight option?');
+
+      // Inspect the router prompt sent to completeJSON: it must NOT contain any private vault facts!
+      const routerSystemPrompt = mockLLM.jsonCalls[0].messages[0].content;
+      const forbiddenVaultLiteralsInRouter = [
+        '7:30',
+        '6:45',
+        '$650',
+        '$820',
+        '$4,800',
+        '6:00 PM',
+        '2h 15m',
+        'shellfish',
+        'Shorai-an',
+        'Granvia',
+      ];
+      for (const secretFact of forbiddenVaultLiteralsInRouter) {
+        expect(routerSystemPrompt).not.toContain(secretFact);
+      }
+
+      // Inspect Maya's system prompt: it must NOT contain "7:30"
+      const mayaSystemPrompt = mockLLM.streamCalls[0].messages[0].content;
+      expect(mayaSystemPrompt).not.toContain('7:30');
+    });
   });
 
   describe('5. Live OpenAI Multi-Agent Turn & A2A Synthesis Check', () => {
@@ -616,6 +681,22 @@ describe('Part 2: Turn Router, Asymmetric Dedup, Concurrent Streaming & Bounded 
         const seqs = reloaded.map((m) => m.seq);
         expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
         expect(sseEvents.at(-1)?.type).toBe('turn.idle');
+
+        // Regression check for "what is the best flight option?" on a fresh chat:
+        // Maya's Wave 0 response MUST NOT know Zoe's private "7:30 AM" wake-up rule before Zoe speaks!
+        store.reset();
+        const bestFlightRes = await orchestrator.handleUserMessage(
+          'what is the best flight option?',
+        );
+        const bestFlightMaya = bestFlightRes.agentMessages.find((m) => m.agentId === 'maya');
+        const bestFlightZoe = bestFlightRes.agentMessages.find((m) => m.agentId === 'zoe');
+        expect(bestFlightMaya).toBeDefined();
+        expect(bestFlightZoe).toBeDefined();
+        // Maya's first message cannot mention 7:30 AM (Zoe's exclusive vault fact)
+        expect(bestFlightMaya!.content).not.toMatch(/7:30/);
+        expect(bestFlightMaya!.content).toMatch(/650|820|Flight\s*A|Flight\s*B/i);
+        // Zoe provides the 7:30 AM wake-up rule
+        expect(bestFlightZoe!.content).toMatch(/7:30|wake|early/i);
 
         // Regression check for user-reported prompt: "What's our travel plans so far, when are our flights?"
         // Verify Maya NEVER speaks twice in a row or repeats herself across waves!

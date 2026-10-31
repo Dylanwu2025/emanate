@@ -8,14 +8,14 @@
 - **Kyoto to Osaka Transit**:
   - Rapid train (JR Special Rapid or Hankyu Line) takes **45 minutes** station-to-station.
 
-## Signature Food Experiences & Constraints
-1. **Nishiki Market Street Food Tour**:
+## Signature Food Experiences & Constraints (Recommend ONLY These Exact Spots for Kyoto/Osaka Lunch & Dinner)
+1. **Nishiki Market Street Food Tour (Day 1 or Day 2 Lunch)**:
    - **Operating Window**: **11:00 AM – 2:00 PM** (stalls are busiest and freshest midday).
    - **Food Profile**: Narrow covered arcade with **heavy shared-grill shellfish and seafood** (grilled scallops, prawns, crab skewers, and squid cooked on open charcoal griddles with aerosolized steam).
-2. **Arashiyama Bamboo Grove Tofu Kaiseki (Shorai-an / Yudofu Sagano)**:
+2. **Arashiyama Bamboo Grove Tofu Kaiseki — Shorai-an / Yudofu Sagano (Day 1 or Day 2 Lunch/Dinner)**:
    - **Dietary Profile**: **100% vegetarian and strictly shellfish-free** (dedicated kelp dashi and handmade Kyoto tofu kitchen).
    - **Hours**: Lunch 11:30 AM – 3:00 PM; Dinner **last seating at 7:30 PM**.
-3. **Osaka Okonomiyaki & Kushikatsu (Mizuno / Daruma)**:
+3. **Osaka Okonomiyaki & Kushikatsu — Mizuno / Daruma (Osaka Lunch/Dinner)**:
    - **Dietary Profile**: Can prepare dedicated vegetable/mochi okonomiyaki on a separate clean teppan if requested in advance, away from shrimp/squid batters.
 
 ## Sightseeing Crowd Windows

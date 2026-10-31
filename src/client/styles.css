@@ -350,6 +350,17 @@ body {
   margin-bottom: 0;
 }
 
+.message-bubble .md-heading {
+  font-size: 0.92rem;
+  font-weight: 700;
+  margin: 8px 0 4px 0;
+  color: var(--text-primary);
+}
+
+.message-bubble .md-heading:first-child {
+  margin-top: 0;
+}
+
 .message-bubble ul,
 .message-bubble ol {
   margin: 4px 0 8px 20px;

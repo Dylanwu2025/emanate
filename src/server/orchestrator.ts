@@ -12,7 +12,7 @@ import type {
   MessageRow,
   MessageStatus,
 } from './db.js';
-import type { ChatMessage, LLMProvider } from './llm.js';
+import { sleepAbortable, type ChatMessage, type LLMProvider } from './llm.js';
 import {
   TurnRouter,
   extractMentionedAgents,
@@ -99,6 +99,17 @@ export function buildConversationHistoryForAgent(
   return history;
 }
 
+const LEADING_META_DISCLAIMER_RE =
+  /^(?:I\s+(?:can(?:'t|’t|not)|only)\s+(?:provide|summarize|share|help\s+with|cover)\s+[^,.!\n]+(?:,\s*but\s+|\s*[.!]\s*)|I(?:'m|’m|\s+am)\s+focused\s+on\s+[^,.\n]+,\s*so\s+(?:I(?:'ll|’ll|\s+will)\s+(?:share|note|mention)\s+that\s+)?)/i;
+
+export function stripLeadingMetaDisclaimer(text: string): string {
+  const match = text.match(LEADING_META_DISCLAIMER_RE);
+  if (!match) return text;
+  const remainder = text.slice(match[0].length).trimStart();
+  if (!remainder) return text;
+  return remainder[0].toUpperCase() + remainder.slice(1);
+}
+
 const LEFT_BOUNDARY_RE = /[\s,.;:!?—–\-(\[{"'/$¥€£]/;
 const RIGHT_BOUNDARY_RE = /[\s,.;:!?—–\-)\]}"']/;
 const INLINE_LEADING_PUNCTUATION_RE = /^[,.;:!?—–)\]}]/;
@@ -165,11 +176,14 @@ export function normalizeContinuationSeam(
     return '';
   }
 
-  // If flushedContent ended with a dangling list bullet (e.g. "\n-" or "\n- ")
-  // and the continuation also starts with a list bullet ("- "), strip the duplicate bullet marker
-  // so we never produce "-- **Flight A"
-  if (DANGLING_BULLET_AT_END_RE.test(flushedContent) && LEADING_BULLET_RE.test(stripped)) {
-    stripped = stripped.replace(LEADING_BULLET_RE, '');
+  // If flushedContent ended with a dangling list bullet (e.g. "\n-" or "\n   -")
+  // and the continuation starts with a list bullet ("- ") OR an em-dash/en-dash/hyphen ("—", "–", "-"),
+  // strip the leading marker so we never produce "-- **Flight A" or "   -—in JPY"
+  if (
+    DANGLING_BULLET_AT_END_RE.test(flushedContent) &&
+    (LEADING_BULLET_RE.test(stripped) || /^[—–\-:]+\s*/.test(stripped))
+  ) {
+    stripped = stripped.replace(/^(?:[-*•]\s+|[—–\-:]+\s*)/, '');
     if (!stripped) return '';
     return /\s$/.test(flushedContent) ? stripped : ` ${stripped}`;
   }
@@ -221,29 +235,20 @@ function isPrefixOfWordBoundedSuffix(flushedTrimmed: string, candidate: string):
   return false;
 }
 
-function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) {
-    if (signal?.aborted) {
-      return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-    }
-    return Promise.resolve();
+function createTurnLinkedAbortController(turnSignal: AbortSignal): AbortController {
+  const abortController = new AbortController();
+  if (turnSignal.aborted) {
+    abortController.abort(turnSignal.reason);
+    return abortController;
   }
-
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  const onTurnAbort = () => abortController.abort(turnSignal.reason);
+  turnSignal.addEventListener('abort', onTurnAbort, { once: true });
+  abortController.signal.addEventListener(
+    'abort',
+    () => turnSignal.removeEventListener('abort', onTurnAbort),
+    { once: true },
+  );
+  return abortController;
 }
 
 export interface PendingContinuation {
@@ -270,7 +275,6 @@ export interface ActiveAgentStreamState {
   agentId: AgentId;
   waveIndex: number;
   epoch: number;
-  generationEpoch: number;
   abortController: AbortController;
   flushedContent: string;
   effort: Exclude<EffortLevel, 'silent'>;
@@ -295,24 +299,12 @@ function createActiveStreamState(init: {
   peerTheses: string[];
   priorSpeakerTheses: Array<{ agentId: AgentId; thesis: string }>;
 }): ActiveAgentStreamState {
-  let _epoch = 1;
   return {
     messageId: init.messageId,
     seq: init.seq,
     agentId: init.agentId,
     waveIndex: init.waveIndex,
-    get epoch() {
-      return _epoch;
-    },
-    set epoch(val: number) {
-      _epoch = val;
-    },
-    get generationEpoch() {
-      return _epoch;
-    },
-    set generationEpoch(val: number) {
-      _epoch = val;
-    },
+    epoch: 1,
     abortController: init.abortController,
     flushedContent: '',
     effort: init.effort,
@@ -349,6 +341,7 @@ export class GroupChatOrchestrator extends EventEmitter {
   private readonly activeStreams = new Map<AgentId, ActiveAgentStreamState>();
   private turnAbortController: AbortController | null = null;
   private activeTurnPromise: Promise<RunTurnResult> | null = null;
+  private steeringChain: Promise<void> = Promise.resolve();
   private currentWaveDynamicPromises: Array<Promise<PublicWireMessage>> = [];
   private currentWaveReservedIds: Set<string> = new Set();
   private steeredInCurrentTurn = false;
@@ -450,8 +443,12 @@ export class GroupChatOrchestrator extends EventEmitter {
       return this.handleMidStreamUserMessage(trimmed);
     }
 
-    // Wait if a turn is just wrapping up its final barrier
-    if (this.activeTurnPromise) {
+    // Bug 7 fix: If a turn is currently in its pre-stream routing phase (awaiting routeWave before
+    // activeStreams is populated), immediately abort the pre-stream routing and start/steer with this new message
+    // instead of blocking for the entire previous turn!
+    if (this.activeTurnPromise && this.turnAbortController && !this.turnAbortController.signal.aborted) {
+      await this.stopAll();
+    } else if (this.activeTurnPromise) {
       await this.activeTurnPromise.catch(() => {});
     }
 
@@ -475,8 +472,6 @@ export class GroupChatOrchestrator extends EventEmitter {
   }
 
   private async handleMidStreamUserMessage(trimmed: string): Promise<RunTurnResult> {
-    const activeAgentIds = Array.from(this.activeStreams.keys());
-
     const userRow = this.store.reserveMessage({
       role: 'user',
       content: trimmed,
@@ -486,6 +481,7 @@ export class GroupChatOrchestrator extends EventEmitter {
     this.emitSSE({ type: 'message.created', message: userMessage });
 
     if (isExplicitStopCommand(trimmed)) {
+      const activeAgentIds = Array.from(this.activeStreams.keys());
       await this.stopAll();
       return {
         userMessage,
@@ -501,13 +497,15 @@ export class GroupChatOrchestrator extends EventEmitter {
       };
     }
 
-    // Immediately freeze/abort preliminarily targeted active streams (0ms latency)
-    // while leaving non-targeted streams completely untouched!
+    // Immediately abort explicitly @mentioned active streams (0ms latency)
+    // before awaiting any serialized steering classification.
     const mentioned = extractMentionedAgents(trimmed);
-    const preliminaryTargets = mentioned.length > 0 ? mentioned : activeAgentIds;
-    const gatedStreams = new Map<AgentId, { stream: ActiveAgentStreamState; snapshot: string }>();
+    const preAbortedStreams = new Map<
+      AgentId,
+      { stream: ActiveAgentStreamState; snapshot: string }
+    >();
 
-    for (const agentId of preliminaryTargets) {
+    for (const agentId of mentioned) {
       const existing = this.activeStreams.get(agentId);
       if (existing && !existing.stopped) {
         const snapshot = existing.flushedContent;
@@ -515,54 +513,167 @@ export class GroupChatOrchestrator extends EventEmitter {
         existing.classificationGate?.resolve('continue');
         existing.classificationGate = createDeferredGate();
         existing.abortController.abort();
-        gatedStreams.set(agentId, { stream: existing, snapshot });
+        preAbortedStreams.set(agentId, { stream: existing, snapshot });
       }
     }
 
-    const classification = await this.router.classifySteering({
-      userMessage: trimmed,
-      activeAgents: activeAgentIds,
-      transcript: this.store.listMessages(),
-      activeRules: this.store.listActiveStandingRules(),
+    let releaseLock!: () => void;
+    const prevChain = this.steeringChain;
+    this.steeringChain = new Promise<void>((res) => {
+      releaseLock = res;
     });
 
-    if (!this.turnAbortController || this.turnAbortController.signal.aborted) {
-      for (const { stream } of gatedStreams.values()) {
-        stream.classificationGate?.resolve('stop');
-        stream.classificationGate = null;
+    let classification!: SteeringClassification;
+    let freshTurnPromise: Promise<RunTurnResult> | null = null;
+
+    await prevChain;
+    try {
+      const activeAgentIds = Array.from(this.activeStreams.keys());
+      const pausedOnlyStreams = new Map<
+        AgentId,
+        { stream: ActiveAgentStreamState; snapshot: string }
+      >();
+
+      // When no explicit @mention was given, pause token emission on active streams
+      // via classificationGate without aborting their upstream HTTP stream yet.
+      if (mentioned.length === 0) {
+        for (const agentId of activeAgentIds) {
+          const existing = this.activeStreams.get(agentId);
+          if (existing && !existing.stopped) {
+            existing.classificationGate?.resolve('continue');
+            existing.classificationGate = createDeferredGate();
+            pausedOnlyStreams.set(agentId, {
+              stream: existing,
+              snapshot: existing.flushedContent,
+            });
+          }
+        }
       }
-      return {
-        userMessage,
-        wavePlans: [],
-        agentMessages: this.getPublicMessages().filter((m) => m.role === 'agent'),
-        steeringClassification: classification,
-      };
-    }
 
-    if (classification.clearRuleScope) {
-      this.store.clearStandingRules(classification.clearRuleScope);
-    }
-    if (classification.standingRule) {
-      this.store.addStandingRule({
-        scope: classification.standingRule.scope,
-        rule: classification.standingRule.rule,
+      classification = await this.router.classifySteering({
+        userMessage: trimmed,
+        activeAgents: activeAgentIds,
+        transcript: this.store.listMessages(),
+        activeRules: this.store.listActiveStandingRules(),
+        signal: this.turnAbortController?.signal,
       });
+
+      if (!this.turnAbortController || this.turnAbortController.signal.aborted) {
+        for (const { stream } of preAbortedStreams.values()) {
+          stream.classificationGate?.resolve('stop');
+          stream.classificationGate = null;
+        }
+        for (const { stream } of pausedOnlyStreams.values()) {
+          stream.classificationGate?.resolve('stop');
+          stream.classificationGate = null;
+        }
+        return {
+          userMessage,
+          wavePlans: [],
+          agentMessages: this.getPublicMessages().filter((m) => m.role === 'agent'),
+          steeringClassification: classification,
+        };
+      }
+
+      if (classification.clearRuleScope) {
+        const cleared = this.store.clearStandingRules(classification.clearRuleScope);
+        if (cleared === 0 && classification.clearRuleScope === 'global') {
+          this.store.clearStandingRules('all');
+        }
+      }
+      if (classification.standingRule) {
+        this.store.addStandingRule({
+          scope: classification.standingRule.scope,
+          rule: classification.standingRule.rule,
+        });
+      }
+
+      if (classification.action === 'stop_all') {
+        await this.stopAll();
+        return {
+          userMessage,
+          wavePlans: [],
+          agentMessages: this.getPublicMessages().filter((m) => m.role === 'agent'),
+          steeringClassification: classification,
+        };
+      }
+
+      if (classification.action === 'new_turn') {
+        await this.stopAll();
+        freshTurnPromise = this.runTurnLoop(userMessage, trimmed);
+        this.activeTurnPromise = freshTurnPromise;
+      } else {
+        // action === 'steer': Selective Abort & In-Place Continuation
+        this.steeredInCurrentTurn = true;
+        const directive = classification.directive || trimmed;
+        const finalTargetSet = new Set<AgentId>(classification.targetAgents);
+
+        for (const [agentId, { stream, snapshot }] of preAbortedStreams.entries()) {
+          if (!finalTargetSet.has(agentId)) {
+            stream.pendingContinuation = {
+              directive: 'Continue your original thought naturally.',
+              flushedSnapshot: snapshot,
+            };
+            stream.classificationGate?.resolve('continue');
+            stream.classificationGate = null;
+          }
+        }
+
+        // Unpause non-targeted streams without ever having aborted their upstream request
+        for (const [agentId, { stream }] of pausedOnlyStreams.entries()) {
+          if (!finalTargetSet.has(agentId)) {
+            stream.classificationGate?.resolve('continue');
+            stream.classificationGate = null;
+          }
+        }
+
+        for (const targetAgentId of classification.targetAgents) {
+          const preAborted = preAbortedStreams.get(targetAgentId);
+          if (preAborted) {
+            preAborted.stream.pendingContinuation = {
+              directive,
+              flushedSnapshot: preAborted.snapshot,
+            };
+            preAborted.stream.classificationGate?.resolve('continue');
+            preAborted.stream.classificationGate = null;
+            continue;
+          }
+
+          const paused = pausedOnlyStreams.get(targetAgentId);
+          if (paused && !paused.stream.stopped) {
+            paused.stream.epoch += 1;
+            paused.stream.pendingContinuation = {
+              directive,
+              flushedSnapshot: paused.snapshot,
+            };
+            paused.stream.abortController.abort();
+            paused.stream.classificationGate?.resolve('continue');
+            paused.stream.classificationGate = null;
+            continue;
+          }
+
+          const existingStream = this.activeStreams.get(targetAgentId);
+          if (existingStream && !existingStream.stopped) {
+            existingStream.epoch += 1;
+            existingStream.pendingContinuation = {
+              directive,
+              flushedSnapshot: existingStream.flushedContent,
+            };
+            existingStream.abortController.abort();
+          } else if (
+            !existingStream &&
+            this.turnAbortController &&
+            !this.turnAbortController.signal.aborted
+          ) {
+            this.spawnDynamicAgentInCurrentWave(targetAgentId, directive);
+          }
+        }
+      }
+    } finally {
+      releaseLock();
     }
 
-    if (classification.action === 'stop_all') {
-      await this.stopAll();
-      return {
-        userMessage,
-        wavePlans: [],
-        agentMessages: this.getPublicMessages().filter((m) => m.role === 'agent'),
-        steeringClassification: classification,
-      };
-    }
-
-    if (classification.action === 'new_turn') {
-      await this.stopAll();
-      const freshTurnPromise = this.runTurnLoop(userMessage, trimmed);
-      this.activeTurnPromise = freshTurnPromise;
+    if (freshTurnPromise) {
       try {
         const res = await freshTurnPromise;
         return { ...res, steeringClassification: classification };
@@ -570,48 +681,6 @@ export class GroupChatOrchestrator extends EventEmitter {
         if (this.activeTurnPromise === freshTurnPromise) {
           this.activeTurnPromise = null;
         }
-      }
-    }
-
-    // action === 'steer': Selective Abort & In-Place Continuation
-    this.steeredInCurrentTurn = true;
-    const directive = classification.directive || trimmed;
-    const finalTargetSet = new Set<AgentId>(classification.targetAgents);
-
-    // Release any preliminarily gated stream that wasn't in finalTargetSet
-    for (const [agentId, { stream, snapshot }] of gatedStreams.entries()) {
-      if (!finalTargetSet.has(agentId)) {
-        stream.pendingContinuation = {
-          directive: 'Continue your original thought naturally.',
-          flushedSnapshot: snapshot,
-        };
-        stream.classificationGate?.resolve('continue');
-        stream.classificationGate = null;
-      }
-    }
-
-    for (const targetAgentId of classification.targetAgents) {
-      const gated = gatedStreams.get(targetAgentId);
-      if (gated) {
-        gated.stream.pendingContinuation = {
-          directive,
-          flushedSnapshot: gated.snapshot,
-        };
-        gated.stream.classificationGate?.resolve('continue');
-        gated.stream.classificationGate = null;
-        continue;
-      }
-
-      const existingStream = this.activeStreams.get(targetAgentId);
-      if (existingStream && !existingStream.stopped) {
-        existingStream.epoch += 1;
-        existingStream.pendingContinuation = {
-          directive,
-          flushedSnapshot: existingStream.flushedContent,
-        };
-        existingStream.abortController.abort();
-      } else if (!existingStream && this.turnAbortController && !this.turnAbortController.signal.aborted) {
-        this.spawnDynamicAgentInCurrentWave(targetAgentId, directive);
       }
     }
 
@@ -645,14 +714,7 @@ export class GroupChatOrchestrator extends EventEmitter {
     });
     this.currentWaveReservedIds.add(row.id);
 
-    const abortController = new AbortController();
-    const onTurnAbort = () => abortController.abort();
-    turnSignal.addEventListener('abort', onTurnAbort, { once: true });
-    abortController.signal.addEventListener(
-      'abort',
-      () => turnSignal.removeEventListener('abort', onTurnAbort),
-      { once: true },
-    );
+    const abortController = createTurnLinkedAbortController(turnSignal);
 
     const speaker: SpeakerPlan = {
       agentId,
@@ -734,7 +796,10 @@ export class GroupChatOrchestrator extends EventEmitter {
 
         if (waveIndex === 0) {
           if (plan.clearRuleScope) {
-            this.store.clearStandingRules(plan.clearRuleScope);
+            const cleared = this.store.clearStandingRules(plan.clearRuleScope);
+            if (cleared === 0 && plan.clearRuleScope === 'global') {
+              this.store.clearStandingRules('all');
+            }
           }
           if (plan.standingRule) {
             this.store.addStandingRule({
@@ -810,14 +875,7 @@ export class GroupChatOrchestrator extends EventEmitter {
       });
       reservedIds.add(row.id);
 
-      const abortController = new AbortController();
-      const onTurnAbort = () => abortController.abort();
-      turnSignal.addEventListener('abort', onTurnAbort, { once: true });
-      abortController.signal.addEventListener(
-        'abort',
-        () => turnSignal.removeEventListener('abort', onTurnAbort),
-        { once: true },
-      );
+      const abortController = createTurnLinkedAbortController(turnSignal);
 
       const streamState = createActiveStreamState({
         messageId: row.id,
@@ -931,7 +989,7 @@ export class GroupChatOrchestrator extends EventEmitter {
                 },
                 {
                   role: 'user' as const,
-                  content: `[Live Redirect: "${currentContinuation.directive}"] Continue directly from the exact end of your partial message above. Do NOT repeat or re-list any bullet headers already written in your partial message above—if converting currency/format for already-mentioned items, state their converted figures in 1 brief clause, then finish ONLY the remaining unstated items in your own domain. Output ONLY the continuation suffix.`,
+                  content: `[Live Redirect: "${currentContinuation.directive}"] Continue directly from the exact end of your partial message above to fulfill "${currentContinuation.directive}". Do NOT repeat or re-list any bullet headers already written in your partial message above, and use ONLY the exact currency/format/length requested in "${currentContinuation.directive}". Output ONLY the continuation suffix.`,
                 },
               ]
             : []),
@@ -945,6 +1003,8 @@ export class GroupChatOrchestrator extends EventEmitter {
           currentContinuation && flushedBeforeContinuation.length > 0,
         );
         let seamBuffer = '';
+        let disclaimerCheckDone = Boolean(currentContinuation);
+        let disclaimerBuffer = '';
 
         try {
           for await (const rawDelta of this.llm.streamChat({
@@ -973,10 +1033,37 @@ export class GroupChatOrchestrator extends EventEmitter {
               }
             }
 
+            if (streamState.classificationGate) {
+              const gateDecision = await streamState.classificationGate.promise;
+              if (
+                gateDecision === 'stop' ||
+                activeSignal.aborted ||
+                streamState.stopped ||
+                streamState.epoch !== activeEpoch
+              ) {
+                break;
+              }
+            }
+
             let deltaToEmit = rawDelta;
 
+            if (!disclaimerCheckDone) {
+              disclaimerBuffer += rawDelta;
+              if (
+                /^I(?:'m|’m|\s+am|\s+can|\s+only)\b/i.test(disclaimerBuffer.trimStart()) &&
+                !/[.!]\s/.test(disclaimerBuffer) &&
+                disclaimerBuffer.length < 110
+              ) {
+                continue;
+              }
+              deltaToEmit = stripLeadingMetaDisclaimer(disclaimerBuffer);
+              disclaimerBuffer = '';
+              disclaimerCheckDone = true;
+              if (!deltaToEmit) continue;
+            }
+
             if (needsSeamNormalization) {
-              seamBuffer += rawDelta;
+              seamBuffer += deltaToEmit;
               if (
                 seamBuffer.length < 48 &&
                 isPrefixOfWordBoundedSuffix(flushedTrimmed, seamBuffer)
@@ -987,13 +1074,27 @@ export class GroupChatOrchestrator extends EventEmitter {
               deltaToEmit = normalizeContinuationSeam(flushedBeforeContinuation, seamBuffer);
               seamBuffer = '';
               if (!deltaToEmit) {
-                // The buffered prefix was 100% duplicate overlap; keep normalizing on the next chunk
                 continue;
               }
               needsSeamNormalization = false;
             }
 
             this.emitDeltaForEpoch(agentId, activeEpoch, deltaToEmit);
+          }
+
+          if (
+            !disclaimerCheckDone &&
+            disclaimerBuffer.length > 0 &&
+            !activeSignal.aborted &&
+            !streamState.stopped &&
+            streamState.epoch === activeEpoch
+          ) {
+            const cleaned = stripLeadingMetaDisclaimer(disclaimerBuffer);
+            disclaimerBuffer = '';
+            disclaimerCheckDone = true;
+            if (cleaned) {
+              this.emitDeltaForEpoch(agentId, activeEpoch, cleaned);
+            }
           }
 
           if (
@@ -1031,16 +1132,7 @@ export class GroupChatOrchestrator extends EventEmitter {
         if (!streamState.stopped && !turnSignal.aborted && streamState.pendingContinuation) {
           currentContinuation = streamState.pendingContinuation;
           streamState.pendingContinuation = null;
-
-          const nextAbortController = new AbortController();
-          const onTurnAbort = () => nextAbortController.abort();
-          turnSignal.addEventListener('abort', onTurnAbort, { once: true });
-          nextAbortController.signal.addEventListener(
-            'abort',
-            () => turnSignal.removeEventListener('abort', onTurnAbort),
-            { once: true },
-          );
-          streamState.abortController = nextAbortController;
+          streamState.abortController = createTurnLinkedAbortController(turnSignal);
           continue;
         }
 

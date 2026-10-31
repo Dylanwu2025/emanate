@@ -75,9 +75,57 @@ export function resolveLLMConfigFromEnv(env: NodeJS.ProcessEnv = process.env): L
 
 export function parseJSONResponse<T>(raw: string): T {
   const trimmed = raw.trim();
-  const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   const candidate = fencedMatch ? fencedMatch[1].trim() : trimmed;
-  return JSON.parse(candidate) as T;
+  try {
+    return JSON.parse(candidate) as T;
+  } catch {
+    const firstBrace = candidate.indexOf('{');
+    const lastBrace = candidate.lastIndexOf('}');
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      return JSON.parse(candidate.slice(firstBrace, lastBrace + 1)) as T;
+    }
+    throw new SyntaxError(`Failed to parse JSON response: ${raw}`);
+  }
+}
+
+export function normalizeAlternatingMessages(
+  messages: ChatMessage[],
+  fallbackUserContent: string,
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  const coalesced: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+  for (const msg of messages) {
+    if (msg.role === 'system') continue;
+    const role: 'user' | 'assistant' = msg.role === 'assistant' ? 'assistant' : 'user';
+    const prev = coalesced[coalesced.length - 1];
+    if (prev && prev.role === role) {
+      prev.content = `${prev.content}\n\n${msg.content}`;
+    } else {
+      coalesced.push({ role, content: msg.content });
+    }
+  }
+
+  if (coalesced.length === 0) {
+    return [{ role: 'user', content: fallbackUserContent }];
+  }
+
+  if (coalesced[0].role === 'assistant') {
+    coalesced.unshift({ role: 'user', content: fallbackUserContent });
+  }
+
+  return coalesced;
+}
+
+function safeExtractDelta(
+  extractDelta: (dataPayload: string) => string | null,
+  payload: string,
+): string | null {
+  try {
+    return extractDelta(payload);
+  } catch {
+    return null;
+  }
 }
 
 async function* parseSSEStream(
@@ -114,11 +162,11 @@ async function* parseSSEStream(
         if (!trimmed.startsWith('data:')) continue;
         const payload = trimmed.slice(5).trim();
         if (!payload || payload === '[DONE]') continue;
-        const delta = extractDelta(payload);
+        const delta = safeExtractDelta(extractDelta, payload);
         if (signal?.aborted) {
           throw signal.reason ?? new DOMException('Aborted', 'AbortError');
         }
-        if ( delta ) {
+        if (delta) {
           yield delta;
         }
       }
@@ -128,7 +176,7 @@ async function* parseSSEStream(
     if (tail.startsWith('data:')) {
       const payload = tail.slice(5).trim();
       if (payload && payload !== '[DONE]') {
-        const delta = extractDelta(payload);
+        const delta = safeExtractDelta(extractDelta, payload);
         if (delta) {
           yield delta;
         }
@@ -215,9 +263,7 @@ export class HttpLLMProvider implements LLMProvider {
         .filter((m) => m.role === 'system')
         .map((m) => m.content)
         .join('\n\n');
-      const chatMessages = messages
-        .filter((m) => m.role !== 'system')
-        .map((m) => ({ role: m.role, content: m.content }));
+      const chatMessages = normalizeAlternatingMessages(messages, 'Continue.');
 
       const res = await this.fetchImpl(url, {
         method: 'POST',
@@ -229,7 +275,7 @@ export class HttpLLMProvider implements LLMProvider {
         body: JSON.stringify({
           model,
           ...(systemText ? { system: systemText } : {}),
-          messages: chatMessages.length > 0 ? chatMessages : [{ role: 'user', content: 'Continue.' }],
+          messages: chatMessages,
           max_tokens: maxTokens,
           temperature,
           stream: true,
@@ -261,19 +307,17 @@ export class HttpLLMProvider implements LLMProvider {
         .filter((m) => m.role === 'system')
         .map((m) => m.content)
         .join('\n\n');
-      const contents = messages
-        .filter((m) => m.role !== 'system')
-        .map((m) => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }],
-        }));
+      const contents = normalizeAlternatingMessages(messages, 'Continue.').map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
 
       const res = await this.fetchImpl(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-          contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: 'Continue.' }] }],
+          contents,
           generationConfig: {
             maxOutputTokens: maxTokens,
             temperature,
@@ -342,9 +386,7 @@ export class HttpLLMProvider implements LLMProvider {
         .filter((m) => m.role === 'system')
         .map((m) => m.content)
         .join('\n\n');
-      const chatMessages = messages
-        .filter((m) => m.role !== 'system')
-        .map((m) => ({ role: m.role, content: m.content }));
+      const chatMessages = normalizeAlternatingMessages(messages, '{}');
 
       const res = await this.fetchImpl(url, {
         method: 'POST',
@@ -358,7 +400,7 @@ export class HttpLLMProvider implements LLMProvider {
           ...(systemText
             ? { system: `${systemText}\n\nRespond ONLY with a valid JSON object.` }
             : { system: 'Respond ONLY with a valid JSON object.' }),
-          messages: chatMessages.length > 0 ? chatMessages : [{ role: 'user', content: '{}' }],
+          messages: chatMessages,
           max_tokens: maxTokens,
           temperature,
         }),
@@ -382,19 +424,17 @@ export class HttpLLMProvider implements LLMProvider {
         .filter((m) => m.role === 'system')
         .map((m) => m.content)
         .join('\n\n');
-      const contents = messages
-        .filter((m) => m.role !== 'system')
-        .map((m) => ({
-          role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }],
-        }));
+      const contents = normalizeAlternatingMessages(messages, '{}').map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
 
       const res = await this.fetchImpl(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
-          contents: contents.length > 0 ? contents : [{ role: 'user', parts: [{ text: '{}' }] }],
+          contents,
           generationConfig: {
             maxOutputTokens: maxTokens,
             temperature,
@@ -432,7 +472,7 @@ export interface ScriptedJSONStep<T = unknown> {
   match?: RegExp | ((options: CompleteJSONOptions) => boolean);
 }
 
-function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) {
     if (signal?.aborted) {
       return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
@@ -556,7 +596,7 @@ export class ScriptableMockLLMProvider implements LLMProvider {
     const delayMs = step.delayMs ?? this.defaultChunkDelayMs;
 
     for (const chunk of step.chunks) {
-      await sleepWithAbort(delayMs, signal);
+      await sleepAbortable(delayMs, signal);
       if (signal?.aborted) {
         throw signal.reason ?? new DOMException('Aborted', 'AbortError');
       }
@@ -578,7 +618,7 @@ export class ScriptableMockLLMProvider implements LLMProvider {
     }
 
     if (step.delayMs && step.delayMs > 0) {
-      await sleepWithAbort(step.delayMs, signal);
+      await sleepAbortable(step.delayMs, signal);
     }
 
     if (typeof step.response === 'function') {
