@@ -118,6 +118,14 @@ export function isCasualSocialMessage(text: string): boolean {
   return CASUAL_SOCIAL_TURN_RE.test(text.trim());
 }
 
+export function isUserBookingConfirmationMessage(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.includes('?')) return false;
+  return /^(?:yes|yep|yeah|ok|okay|sure|sounds\s+good|let'?s\s+do\s+(?:that|it)|let'?s\s+book\s+(?:that|it)|go\s+ahead|agreed|confirm(?:ed)?)\b/i.test(
+    trimmed,
+  );
+}
+
 export function isStandaloneStandingRuleMessage(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.includes('?')) return false;
@@ -223,7 +231,7 @@ export function isSelfRepetitiveForAgent(
     /^(?:ask|prompt|remind|request|wait\s+for)\s+(?:the\s+)?(?:user|group|everyone)\s+to\s+(?:choose|confirm|select|decide|pick|let\s+us\s+know)/i.test(
       trimmed,
     ) ||
-    /\b(?:confirm\s+(?:the\s+)?preferred\s+(?:flight|option)|choose\s+between\s+flight\s+a\s+(?:and|or)\s+flight\s+b|finalize\s+travel\s+plans)\b/i.test(
+    /\b(?:confirm\s+(?:the\s+)?(?:preferred\s+(?:flight|option)|readiness|reservation|booking)|choose\s+between\s+flight\s+a\s+(?:and|or)\s+flight\s+b|finalize\s+(?:travel\s+plans|the\s+reservation|booking)|secure\s+(?:our\s+|the\s+)?lodging)\b/i.test(
       trimmed,
     )
   ) {
@@ -333,7 +341,7 @@ export function isExplicitStopCommand(text: string): boolean {
 }
 
 const CLEAR_CLAUSE_RE =
-  /\b(?:forget|clear|remove|drop|cancel|reset|stop\s+following)\b.*\b(?:standing\s+rules?|rules?|instructions?|format|prefix|suffix|tag|haikus?|jpy|yen|euros?|bullet\s+points?|uppercase)\b|\b(?:stop\s+(?:using|answering|writing|starting|ending|beginning|finishing|including|adding|appending|putting)|no\s+longer\s+need\s+to|no\s+more\s+(?:haikus?|bullets?|bullet\s+points?|prefixes|suffixes|tags|jpy|yen|euros?|uppercase)|don'?t\s+(?:use|start|end|include|add)|answer\s+in\s+\d*\s*normal\s+sentences?|without\s+any\s+(?:prefix|suffix|tag)|go\s+back\s+to\s+usd|switch\s+back\s+to\s+usd)/i;
+  /\b(?:forget|clear|remove|drop|cancel|reset|stop\s+following|never\s*mind)\b.*\b(?:standing\s+rules?|rules?|instructions?|format|prefix|suffix|tag|haikus?|riddles?|rhymes?|poems?|poetry|jpy|yen|euros?|bullet\s+points?|uppercase)\b|\b(?:stop\s+(?:using|answering|writing|speaking|talking|starting|ending|beginning|finishing|including|adding|appending|putting)|no\s+longer\s+need\s+to|no\s+more\s+(?:haikus?|riddles?|rhymes?|poems?|bullets?|bullet\s+points?|prefixes|suffixes|tags|jpy|yen|euros?|uppercase)|don'?t\s+(?:use|start|end|include|add|speak\s+in|write\s+in)|(?:talk|speak|respond|answer|write|chat)\s+normally|just\s+talk\s+normally|back\s+to\s+normal|normal\s+(?:tone|english|voice|sentences?)|(?:riddles?|haikus?|poems?|rhymes?)\s+are\s+(?:hard|difficult|annoying|confusing)|answer\s+in\s+\d*\s*normal\s+sentences?|without\s+any\s+(?:prefix|suffix|tag)|go\s+back\s+to\s+usd|switch\s+back\s+to\s+usd)/i;
 
 export function detectRuleClearScope(
   text: string,
@@ -809,7 +817,8 @@ Return strict JSON:
       !isMock &&
       (isCasualSocialMessage(lastUserMessageContent) ||
         isGeneralRecapQuery(lastUserMessageContent) ||
-        isStandaloneStandingRuleMessage(lastUserMessageContent))
+        isStandaloneStandingRuleMessage(lastUserMessageContent) ||
+        isUserBookingConfirmationMessage(lastUserMessageContent))
     ) {
       return {
         waveIndex,

@@ -622,7 +622,12 @@ describe('Part 3: In-Flight Mid-Stream Steering, Selective Abort, Stop-All, Stan
       );
       expect(scopedClear).toBe('maya');
 
-      // 3. Topic replacement interrupts ("Actually stop, just tell me...", "Wait no, just tell me...")
+      // 3. Natural style/riddle cancellation ("yes, nevermind riddles are hard to read lets just talk normally")
+      expect(
+        detectRuleClearScope('yes, nevermind riddles are hard to read lets just talk normally'),
+      ).toBe('global');
+
+      // 4. Topic replacement interrupts ("Actually stop, just tell me...", "Wait no, just tell me...")
       expect(isTopicReplacementInterrupt('Wait no, just tell me about Osaka')).toBe(true);
       expect(
         isTopicReplacementInterrupt('Actually stop, just tell me our total budget in 1 sentence'),
