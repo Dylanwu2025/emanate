@@ -990,7 +990,7 @@ Return strict JSON:
       );
       const prevWaveCombinedText = prevWaveMsgs.map((m) => m.content).join('\n');
       const prevWaveHasQuestionOrVeto =
-        /[?]|\b(?:what\s+about|alternative|instead|avoid|veto(?:ed)?|unsafe|risk|cannot|can't|isn't\s+suitable|not\s+suitable|won't\s+work|conflicts?\s+with|rules?\s+out|miss\s+the\s+check-?in)\b/i.test(
+        /[?]|\b(?:ensure|verify|check|what\s+about|alternative|instead|avoid|veto(?:ed)?|unsafe|risk|cannot|can't|isn't\s+suitable|not\s+suitable|won't\s+work|conflicts?\s+with|rules?\s+out|miss\s+the\s+check-?in)\b/i.test(
           prevWaveCombinedText,
         );
 
@@ -1015,21 +1015,22 @@ Return strict JSON:
           }
 
           const alreadyListedMultipleOptions = priorMsgsForAgent.some(
-            (msg) => (msg.match(/\*\*[^*]+\*\*/g) ?? []).length >= 3,
+            (msg) =>
+              /\b1[.)]\s+[\s\S]*\b2[.)]\s+/.test(msg) ||
+              (msg.match(/(?:^|\n)\s*[-*•]\s+/g) ?? []).length >= 2,
           );
-          const isMayaPivotingAfterPeer =
-            agentId === 'maya' &&
+          const isWave0SpeakerPivotingAfterPeer =
             priorMsgsForAgent.length === 1 &&
             !alreadyListedMultipleOptions &&
             prevWaveHasQuestionOrVeto &&
-            inferredPrevSpeakers.some((id) => id !== 'maya');
+            inferredPrevSpeakers.some((id) => id !== agentId);
           const isTaggedPeerReplyingToQuestionOrVeto =
             wasTaggedInPrevWave &&
             priorMsgsForAgent.length === 1 &&
             !inferredPrevSpeakers.includes(agentId) &&
             prevWaveHasQuestionOrVeto;
 
-          if (!isMayaPivotingAfterPeer && !isTaggedPeerReplyingToQuestionOrVeto) {
+          if (!isWave0SpeakerPivotingAfterPeer && !isTaggedPeerReplyingToQuestionOrVeto) {
             rawDecisions[agentId] = { effort: 'silent', thesis: '' };
             continue;
           }
@@ -1092,10 +1093,11 @@ Return strict JSON:
       // Whenever Wave 0 speakers presented multiple options/candidates (e.g. numbered list 1. / 2.,
       // multiple bolded options **...**, "vs", or a trade-off/comparison) OR proposed a concrete
       // schedule/option, and Zoe (the constraints/compliance/preferences specialist) has not spoken
-      // yet in this turn, trigger Zoe in Wave 1 unless Wave 0 was a pure transit/cutoff math calculation!
+      // yet in the conversation, trigger Zoe in Wave 1 unless Wave 0 was a pure transit/cutoff math calculation!
       if (!isMock && waveIndex === 1) {
         const turnCombinedText = currentTurnAgentMsgs.map((m) => m.content).join('\n');
         const zoeSpokeInTurn = currentTurnAgentMsgs.some((m) => m.agent_id === 'zoe');
+        const zoeSpokeEarlierInHistory = transcript.some((m) => m.agent_id === 'zoe');
         const boldMatches = turnCombinedText.match(/\*\*[^*]+\*\*/g) ?? [];
         const hasNumberedOrBulletOptions =
           /(?:^|\n)\s*(?:1[.)]|[-*•])\s+/m.test(turnCombinedText) && boldMatches.length >= 2;
@@ -1116,7 +1118,7 @@ Return strict JSON:
           !isPureTransitCutoffMathOnly &&
           !isGeneralRecapQuery(lastUserMessageContent)
         ) {
-          if (rawDecisions.zoe.effort === 'silent') {
+          if (rawDecisions.zoe.effort === 'silent' && !zoeSpokeEarlierInHistory) {
             rawDecisions.zoe = {
               effort: currentTurnAgentMsgs.length >= 2 ? 'standard' : 'light',
               thesis: getDomainSafeThesisFallback('zoe', runtimeConfig),
@@ -1186,7 +1188,7 @@ Return strict JSON:
           .toLowerCase()
           .replace(/[^a-z0-9\s]/g, ' ')
           .split(/\s+/)
-          .filter((w) => w.length >= 4);
+          .filter((w) => w.length >= 3);
 
         const matchedAgentsByVaultIndex: AgentId[] = [];
         for (const agentId of AGENT_IDS) {
@@ -1206,7 +1208,7 @@ Return strict JSON:
           );
         const isPureSingleDimensionPriceQuery =
           asksPricingOrBudget &&
-          !/\b(?:should\s+we|which\s+one|or\s+|transit|latency|benchmarks?|specs?|hours?|schedule|check\s+into|make\s+it|make\s+that|allerg(?:y|ies)|compliance|legal)\b/i.test(
+          !/\b(?:should\s+we|can\s+we|where|what\s+time|which\s+one|or\s+|transit|latency|benchmarks?|specs?|hours?|schedule|check\s+into|make\s+it|make\s+that|food|tour|lunch|dinner|eat|restaurant|market|sight|allerg(?:y|ies)|compliance|legal)\b/i.test(
             referenceText,
           );
 
@@ -1272,6 +1274,9 @@ Return strict JSON:
         }
 
         if (matchedAgentsByVaultIndex.length > 0) {
+          const llmScheduledMatchedAgent = matchedAgentsByVaultIndex.some(
+            (id) => rawDecisions[id].effort !== 'silent',
+          );
           for (const matchedId of matchedAgentsByVaultIndex) {
             if (rawDecisions[matchedId].effort === 'silent') {
               rawDecisions[matchedId] = {
@@ -1280,12 +1285,14 @@ Return strict JSON:
               };
             }
           }
-          // If the router mistakenly scheduled ONLY an agent whose vault index did NOT match any entity
-          // in the user's question (like scheduling only Zoe on a Flight B + Ryokan Gion check-in question),
-          // silence the non-matching agent in Wave 0 so the actual entity-owning agents speak first!
-          for (const id of AGENT_IDS) {
-            if (!matchedAgentsByVaultIndex.includes(id)) {
-              rawDecisions[id] = { effort: 'silent', thesis: '' };
+          // Only silence non-matching agents if this is a pure single-dimension price query OR if the LLM
+          // router failed to schedule ANY of the vault-matched agents (context-momentum misrouting, e.g.
+          // scheduling only Zoe on "If we take Flight B, can we check into Ryokan Gion?").
+          if (isPureSingleDimensionPriceQuery || !llmScheduledMatchedAgent || asksArrivalOrCheckInFeasibility) {
+            for (const id of AGENT_IDS) {
+              if (!matchedAgentsByVaultIndex.includes(id)) {
+                rawDecisions[id] = { effort: 'silent', thesis: '' };
+              }
             }
           }
         }

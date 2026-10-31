@@ -14,7 +14,12 @@ import type {
   MessageRow,
   MessageStatus,
 } from './db.js';
-import { sleepAbortable, type ChatMessage, type LLMProvider } from './llm.js';
+import {
+  ScriptableMockLLMProvider,
+  sleepAbortable,
+  type ChatMessage,
+  type LLMProvider,
+} from './llm.js';
 import {
   TurnRouter,
   extractMentionedAgents,
@@ -103,7 +108,7 @@ export function buildConversationHistoryForAgent(
 }
 
 const LEADING_META_DISCLAIMER_RE =
-  /^(?:(?:Regarding\s+[^,.\n]+,\s*)?I\s+(?:can(?:'t|’t|not)|don(?:'t|’t)|do\s+not|only)\s+(?:provide|summarize|share|help\s+with|cover|have)\s+[^,.!\n]+(?:,\s*but\s+|\s*[.!]\s*(?:(?:However|Instead|Meanwhile)\s*[,:]?\s*)?)|I(?:'m|’m|\s+am)\s+focused\s+on\s+[^,.\n]+,\s*so\s+(?:I(?:'ll|’ll|\s+will)\s+(?:share|note|mention)\s+that\s+)?)/i;
+  /^(?:(?:Regarding\s+[^,.\n]+,\s*)?I\s+(?:can(?:'t|’t|not)?|don(?:'t|’t)|do\s+not|only)\s+(?:provide(?:\s+you\s+with)?|summarize|share|help\s+with|cover|have|speak\s+to)\s+[^,.!\n]+(?:,\s*but\s+|\s*[.!]\s*(?:(?:However|Instead|Meanwhile)\s*[,:]?\s*)?)|I(?:'m|’m|\s+am)\s+focused\s+on\s+[^,.\n]+,\s*so\s+(?:I(?:'ll|’ll|\s+will)\s+(?:share|note|mention)\s+that\s+)?)/i;
 
 export function stripLeadingMetaDisclaimer(text: string): string {
   const match = text.match(LEADING_META_DISCLAIMER_RE);
@@ -869,7 +874,10 @@ export class GroupChatOrchestrator extends EventEmitter {
           .map((m) => m.agentId)
           .filter((id): id is AgentId => Boolean(id));
 
-        if (turnSignal.aborted || this.steeredInCurrentTurn) {
+        if (
+          turnSignal.aborted ||
+          (this.steeredInCurrentTurn && this.llm instanceof ScriptableMockLLMProvider)
+        ) {
           break;
         }
       }

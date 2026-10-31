@@ -194,6 +194,8 @@ export function getAgentDomainIndexKeywords(
     'departure', 'arrival', 'price', 'nightly', 'rate', 'hours', 'strict',
     'kyoto', 'osaka', 'japan', 'kansai', 'station', 'airport', 'city', 'days',
     'trip', 'plan', 'plans', 'project', 'nova', 'launch', 'team',
+    'day', 'our', 'are', 'can', 'who', 'how', 'per', 'one', 'two', 'all', 'not',
+    'but', 'use', 'any', 'via', 'see', 'get', 'set', 'new', 'old', 'out',
   ]);
 
   const tokens = topics
@@ -201,7 +203,7 @@ export function getAgentDomainIndexKeywords(
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length >= 4 && !genericIgnore.has(w));
+    .filter((w) => w.length >= 3 && !genericIgnore.has(w));
   return new Set(tokens);
 }
 
